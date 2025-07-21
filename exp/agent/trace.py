@@ -6,11 +6,19 @@ import pandas as pd
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import glob
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 from collections import defaultdict
 from exp.utils import read_parquet_with_filters, utc_to_cst
 
 
-def parse_tags_array(tags_array) -> Dict:
+def parse_tags_array(tags_array):
     tag_dict = {}
     if isinstance(tags_array, np.ndarray):
         for tag in tags_array:
@@ -46,7 +54,7 @@ def detect_unbalanced_logs(spans: pd.DataFrame) -> List[Dict]:
     return unbalanced
 
 
-def detect_large_message(spans: pd.DataFrame, threshold=1024*1024) -> List[Dict]:
+def detect_large_message(spans: pd.DataFrame, threshold=10*1024) -> List[Dict]:
     large_msgs = []
     for _, row in spans.iterrows():
         logs = row.get("logs")
@@ -190,7 +198,7 @@ class TraceAgent:
                 df = future.result()
                 if not df.empty:
                     df['start'] = pd.to_datetime(df["startTimeMillis"], unit="ms")
-                    df['end'] = df['start'] + pd.to_timedelta(df['duration'], unit='us')
+                    df['end'] = df['start'] + pd.to_timedelta(df['duration'], unit='ms')
                     df['pod'] = df['process'].apply(lambda x: x.get('serviceName', 'unknown') if isinstance(x, dict) else 'unknown')
                     results.append(df[self.spans_fields])
 

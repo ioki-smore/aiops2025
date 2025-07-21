@@ -13,10 +13,13 @@ from exp.utils import daterange, read_parquet_with_filters
 from sklearn.decomposition import PCA
 from tslearn.clustering import TimeSeriesKMeans
 from tslearn.utils import to_time_series_dataset
+import logging
 
-import warnings
-warnings.filterwarnings("ignore")
-
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 KPI_MODEL = {
     "cpu_usage": "rbf",
     "timeout": "poisson",
@@ -64,7 +67,7 @@ def detect_change_points(series: Series, model="rbf", pen=10) -> List:
     result = algo.predict(pen=pen)
     return result
 
-def rolling_std_anomaly(series: Series, window=5, z_thresh=3) -> bool:
+def rolling_std_anomaly(series: Series, window=5, z_thresh=3):
     rolling_mean = series.rolling(window=window).mean()
     rolling_std = series.rolling(window=window).std()
     z_score = (series - rolling_mean) / rolling_std
@@ -274,32 +277,17 @@ class MetricAgent:
             #         })
 
         return scores
+
     def query_metrics(self, start_time: datetime, end_time: datetime):
-        apm = self.load_apm(start_time, end_time)
-        print(f"Loaded {len(apm)} APM records from {start_time} to {end_time}")
         infra = self.load_infra_or_other('infra/infra_pod/*.parquet', start_time, end_time)
         other = self.load_infra_or_other('other/*.parquet', start_time, end_time)
         infra_and_other = pd.concat([infra, other], ignore_index=True)
-        print(f"Loaded {len(infra_and_other)} infra/other records from {start_time} to {end_time}")
+        logging.info(f"Loaded {len(infra_and_other)} infra/other records from {start_time} to {end_time}")
 
-        if apm.empty and infra_and_other.empty:
-            return {"observation": "No metric data available for analysis.", "details": {}, "events": []}
 
         anomalies = []
         details = {}
         events = []
-
-        if not apm.empty:
-            for kpi, threshold in self.apm_thresholds.items():
-                if apm[kpi].mean() > threshold:
-                    object_id = apm.loc[apm[kpi].idxmax(), "object_id"] if "object_id" in apm.columns else None
-                    details[kpi] = {
-                        "reason": f"Value exceeded domain threshold {threshold}",
-                        "max_value": apm[kpi].max(),
-                        "timestamps": str(apm['time'][apm[kpi].idxmax()]),
-                        "pod": object_id
-                    }
-                    events.append({"kpi": kpi, "type": "threshold_violation", "value": float(apm[kpi].max()), "threshold": threshold, "time": str(apm['time'][apm[kpi].idxmax()]), "pod": object_id})
 
         for pod, pod_group in infra_and_other.groupby("pod"):
             for kpi, group in pod_group.groupby("kpi_key"):
@@ -368,7 +356,7 @@ class MetricAgent:
         else:
             observation = "No significant metric anomalies detected."
 
-        print({
+        logging.info({
             "observation": observation,
             "details": details,
             "events": events

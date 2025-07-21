@@ -5,8 +5,15 @@ from typing import Counter
 import pandas as pd
 from datetime import datetime, timedelta
 import pyarrow.dataset as ds
-
 from exp.utils import read_parquet_with_filters, utc_to_cst
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 
 class LogAgent:
     """
@@ -42,12 +49,14 @@ class LogAgent:
                 if not df.empty:
                     df["k8_pod"] = df["k8_pod"].astype(str).str.replace(r"-\d+$", "", regex=True)
                     df = df[df['message'].notna() & df['message'].str.startswith("{")]
+
                     results.append(df[self.fields])
 
         return pd.concat(results, ignore_index=True) if results else pd.DataFrame()
 
     
     def score(self, start_time: datetime, end_time: datetime):
+
         """
         Inspect logs between start_time and end_time for error events.
         Returns a dict with an observation and details of log events.

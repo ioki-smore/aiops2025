@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from logging import debug
+import os
 import re
 import pandas as pd
 import json
@@ -350,7 +351,7 @@ class JudgeAgent:
 def call_llm(prompt: str) -> str:
     from openai import OpenAI
 
-    client = OpenAI(api_key="4d94fd73b8d164ab5d87d234847f7932b761082ad68f3e6ed49f0d246a356a4a", base_url="https://uni-api.cstcloud.cn/v1")
+    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url=os.getenv("DEEPSEEK_API_URL"))
     response = client.chat.completions.create(
         model="deepseek-r1:671b-0528",
         messages=[

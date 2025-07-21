@@ -1,9 +1,16 @@
 import asyncio
 import json
+import logging
+import os
 from openai import OpenAI
 import re
 import json
 from typing import Dict, Any
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 def extract_json_from_response(content: str) -> Dict[str, Any]:
     match = re.search(r"```json\s*(\{.*?\})\s*```", content, re.DOTALL)
@@ -31,10 +38,10 @@ class JudgeAgent:
     Integrates signals from MetricAgent, TraceAgent, LogAgent and uses the DeepSeek-LLM to infer root cause.
     """
 
-    def __init__(self):
+    def __init__(self, api_key: str | None, api_url: str | None):
         print("JudgeAgent: Initializing JudgeAgent")
-        # self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
-        # self.api_url = api_url or os.getenv("DEEPSEEK_API_URL")
+        self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
+        self.api_url = api_url or os.getenv("DEEPSEEK_API_URL")
         # if not self.api_key or not self.api_url:
             # print("JudgeAgent: Warning - DeepSeek-LLM API key or URL not provided. LLM calls will be skipped.")
 
@@ -58,7 +65,7 @@ class JudgeAgent:
             "Please respond **only** with a JSON object, without markdown formatting or extra commentary."
         )
         print(f"JudgeAgent: Sending prompt to LLM: {prompt}")
-        client = OpenAI(api_key="57be85cc58d2ad09ad5f9790ac3068d740dff89e64ff947c08706b618c8cc1fe", base_url="https://uni-api.cstcloud.cn/v1")
+        client = OpenAI(api_key=self.api_key, base_url=self.api_url)
         response = client.chat.completions.create(
             model="deepseek-r1:671b-0528",
             # model="deepseek-r1:32b",
@@ -69,12 +76,13 @@ class JudgeAgent:
             ],
             response_format={"type": "json_object"},  # 强制JSON输出
             stream=False,
-            temperature=0,          # 控制随机性 (0-2)
+            temperature=0,       # 控制随机性 (0-2)
             top_p=0.95,             # 多样性控制
             parallel_tool_calls=True,  # 并行调用工具
         )
-        print(response.choices[0].message.model_dump_json(exclude_none=True, exclude_unset=True))
+        # print(response.choices[0].message.model_dump_json(exclude_none=True, exclude_unset=True))
         response = json.loads(json.loads(response.choices[0].message.model_dump_json(exclude_none=True, exclude_unset=True))['content'])
+        logging.info(f"JudgeAgent: LLM response: {response}")
         # response = extract_json_from_response(response)
         print(response.get("component", ""))
         output = {
