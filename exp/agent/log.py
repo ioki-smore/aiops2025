@@ -5,6 +5,13 @@ from typing import Counter
 import pandas as pd
 from datetime import datetime, timedelta
 import pyarrow.dataset as ds
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 from utils import read_parquet_with_filters, utc_to_cst
 
@@ -94,5 +101,5 @@ class LogAgent:
             'global_keyword_summary': dict(global_keywords.most_common(5))
         }
         
-        print(f"LogAgent: {observation, details}")
+        logging.info(f"LogAgent: {observation, details}")
         return {"observation": observation, "details": details}

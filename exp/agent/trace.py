@@ -6,6 +6,13 @@ import pandas as pd
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import glob
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 from utils import read_parquet_with_filters, utc_to_cst
 
@@ -46,7 +53,7 @@ def detect_unbalanced_logs(spans: pd.DataFrame) -> List[Dict]:
     return unbalanced
 
 
-def detect_large_message(spans: pd.DataFrame, threshold=1024*1024) -> List[Dict]:
+def detect_large_message(spans: pd.DataFrame, threshold=10*1024) -> List[Dict]:
     large_msgs = []
     for _, row in spans.iterrows():
         logs = row.get("logs")
@@ -208,7 +215,7 @@ class TraceAgent:
                 valid_trace_ids.append(trace_id)
 
         spans = spans[spans['traceID'].isin(valid_trace_ids)]
-        print(f"Analyzing {len(valid_trace_ids)} valid traces from {start_time} to {end_time}")
+        logging.info(f"Analyzing {len(valid_trace_ids)} valid traces from {start_time} to {end_time}")
         traces = build_trace(spans)
         structure_groups = group_by_structure(traces)
 
@@ -253,7 +260,10 @@ class TraceAgent:
                 details.setdefault('service_self_calls', []).extend(self_calls)
 
         observation = f"Detected issues: {', '.join(set(issues))}." if issues else "No significant anomalies detected in traces."
-
+        # logging.info({
+        #     "observation": observation,
+        #     "details": details,
+        # })
         return {
             "observation": observation,
             "details": details

@@ -1,10 +1,16 @@
 import asyncio
 import json
+import logging
 import os
 from openai import OpenAI
 import re
 import json
 from typing import Dict, Any
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 def extract_json_from_response(content: str) -> Dict[str, Any]:
     match = re.search(r"```json\s*(\{.*?\})\s*```", content, re.DOTALL)
@@ -75,8 +81,9 @@ class JudgeAgent:
             parallel_tool_calls=True,  # 并行调用工具
         )
         # print(response.choices[0].message.model_dump_json(exclude_none=True, exclude_unset=True))
-        response = json.loads(response.choices[0].message.model_dump_json(exclude_none=True, exclude_unset=True))
-        response = extract_json_from_response(response)
+        response = json.loads(json.loads(response.choices[0].message.model_dump_json(exclude_none=True, exclude_unset=True))['content'])
+        logging.info(f"JudgeAgent: LLM response: {response}")
+        # response = extract_json_from_response(response)
         print(response.get("component", ""))
         output = {
             "uuid": uuid,

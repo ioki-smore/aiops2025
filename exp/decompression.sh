@@ -1,7 +1,7 @@
 #!/bin/bash
 set -eo pipefail
 
-directories=("data/" "phaseone/")
+directories=("data/" "phaseone/" "phasetwo/")
 
 process_tar() {
     local file="$1"

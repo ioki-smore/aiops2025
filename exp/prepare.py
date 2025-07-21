@@ -1,71 +1,74 @@
 import pandas as pd
 from pathlib import Path
 from datetime import datetime, timedelta
+import logging
 
-# 根目录，例如 "phaseone"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 ROOT_DIR = Path("phaseone")
 
-# 起止日期
 START_DATE = datetime.strptime("2025-06-06", "%Y-%m-%d")
 END_DATE = datetime.strptime("2025-06-14", "%Y-%m-%d")
 
-# 遍历日期范围
-def daterange(start_date, end_date):
+def daterange(start_date: datetime, end_date: datetime):
     for n in range((end_date - start_date).days + 1):
         yield start_date + timedelta(n)
 
-# 处理单个文件
-def preprocess_parquet(file_path: Path):
+def preprocess_parquet(file_path: Path) -> None:
     try:
         df = pd.read_parquet(file_path)
-        if "@timestamp" not in df.columns:
-            print(f"Skipping {file_path.name}: no '@timestamp' column")
-            return
-
-        # 转换 @timestamp 字段为 datetime
-        df["@timestamp"] = pd.to_datetime(df["@timestamp"], errors="coerce", utc=True).dt.tz_localize(None)
-
-        # 可选：移除无效行（非必需）
-        # df = df[df["time"].notnull()]
-
-        # 覆盖写回原文件
-        df.to_parquet(file_path, engine="pyarrow", allow_truncated_timestamps=True)
-        print(f"✅ Processed {file_path} with {len(df)} records")
     except Exception as e:
-        print(f"❌ Failed to process {file_path}: {e}")
+        logging.error(f"Read file error: {file_path}: {e}")
+        return
+    column = "@timestamp" if file_path.name.startswith("log_") else "time"
+    if column not in df.columns:
+        logging.warning(f"Skip {file_path.name}, less {column} column")
+        return
 
-# 主程序
-for date in daterange(START_DATE, END_DATE):
+    ts = pd.to_datetime(df[column], errors="coerce", utc=True)
+    if ts.isnull().all():
+        ts = pd.to_datetime(df[column], errors="coerce", unit="s", utc=True)
+
+    if ts.isnull().any():
+        logging.warning(f"{file_path.name} contains invalid timestamps, dropping rows")
+
+    df[column] = ts.dt.tz_localize(None)
+
+    try:
+        df.to_parquet(file_path, engine="pyarrow", allow_truncated_timestamps=True)
+        logging.info(f"✅ processed {file_path.name} successfully")
+    except Exception as e:
+        logging.error(f"Failed to write {file_path.name}: {e}")
+
+def process_directory_for_date(date: datetime, subdirs: list[str]) -> None:
     day_str = date.strftime("%Y-%m-%d")
-    # service_dir = ROOT_DIR / day_str / "metric-parquet" / "apm" / "service"
-    # if not service_dir.exists():
-    #     print(f"Skipping missing directory: {service_dir}")
-    #     continue
+    for subdir in subdirs:
+        dir_path = ROOT_DIR / day_str / subdir
+        if not dir_path.exists():
+            logging.warning(f"Skip: {dir_path}")
+            continue
 
-    # for file_path in service_dir.glob("*.parquet"):
-    #     preprocess_parquet(file_path)
+        parquet_files = list(dir_path.glob("*.parquet"))
+        if not parquet_files:
+            logging.info(f"No parquet files found in {dir_path}")
+            continue
 
-    # infra_dir = ROOT_DIR / day_str / "metric-parquet" / "infra" / "infra_pod"
-    # if not infra_dir.exists():
-    #     print(f"Skipping missing directory: {infra_dir}")
-    #     continue
+        for file_path in parquet_files:
+            preprocess_parquet(file_path)
 
-    # for file_path in infra_dir.glob("*.parquet"):
-    #     preprocess_parquet(file_path)
-    
-    # other_dir = ROOT_DIR / day_str / "metric-parquet" / "other"
-    # if not other_dir.exists():
-    #     print(f"Skipping missing directory: {other_dir}")
-    #     continue 
-    # for file_path in other_dir.glob("*.parquet"):
-    #     preprocess_parquet(file_path)
+def main():
+    service_dirs = ["metric-parquet/apm/service"]
+    infra_dirs = ["metric-parquet/infra/infra_pod"]
+    other_dirs = ["metric-parquet/other"]
+    log_dirs = ["log-parquet"]
 
-    log_dir = ROOT_DIR / day_str / "log-parquet"
-    if not log_dir.exists():
-        print(f"Skipping missing directory: {log_dir}")
-        continue
+    for date in daterange(START_DATE, END_DATE):
+        process_directory_for_date(date, service_dirs + infra_dirs + other_dirs + log_dirs)
+        # process_directory_for_date(date, log_dirs)
 
-    for file_path in log_dir.glob("*.parquet"):
-        preprocess_parquet(file_path)
-
-    
+if __name__ == "__main__":
+    main()

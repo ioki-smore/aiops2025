@@ -125,7 +125,7 @@ def main():
 
     completed = 0
     all_tasks = len(anomalies)
-    with ThreadPoolExecutor(max_workers=16) as executor:
+    with ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(process_anomaly, item, metric_agent, trace_agent, log_agent, judge_agent)
                    for item in anomalies]
         for future in futures:
