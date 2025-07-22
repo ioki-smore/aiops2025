@@ -76,13 +76,13 @@ class JudgeAgent:
             ],
             response_format={"type": "json_object"},  # 强制JSON输出
             stream=False,
-            temperature=0.35,       # 控制随机性 (0-2)
+            temperature=0,       # 控制随机性 (0-2)
             top_p=0.95,             # 多样性控制
             parallel_tool_calls=True,  # 并行调用工具
         )
         # print(response.choices[0].message.model_dump_json(exclude_none=True, exclude_unset=True))
         response = json.loads(json.loads(response.choices[0].message.model_dump_json(exclude_none=True, exclude_unset=True))['content'])
-        logging.info(f"JudgeAgent: LLM response: {response}")
+        print(f"JudgeAgent: LLM response: {response}")
         # response = extract_json_from_response(response)
         print(response.get("component", ""))
         output = {

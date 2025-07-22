@@ -361,7 +361,7 @@ def call_llm(prompt: str) -> str:
         ],
         response_format={"type": "json_object"},  # 强制JSON输出
         stream=False,
-        temperature=0.35,       # 控制随机性 (0-2)
+        temperature=0,       # 控制随机性 (0-2)
         top_p=0.95,             # 多样性控制
     )
     return response.choices[0].message.content

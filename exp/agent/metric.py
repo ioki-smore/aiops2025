@@ -9,7 +9,7 @@ import pyarrow.dataset as ds
 import numpy as np
 from pandas import Series
 import ruptures as rpt
-from utils import daterange, read_parquet_with_filters
+from exp.utils import daterange, read_parquet_with_filters
 from sklearn.decomposition import PCA
 from tslearn.clustering import TimeSeriesKMeans
 from tslearn.utils import to_time_series_dataset
@@ -20,7 +20,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-
 KPI_MODEL = {
     "cpu_usage": "rbf",
     "timeout": "poisson",
@@ -132,12 +131,22 @@ def extract_correlated_groups(correlations, infra_df, min_overlap_secs=180):
 
 
 class MetricAgent:
-    def __init__(self, root_path: str):
+    def __init__(self, root_path: str,
+                 err_threshold=0.1,
+                 timeout_threshold=10,
+                 rrt_threshold=4000,
+                 rrt_max_threshold=10000):
+        
         self.root_path = Path(root_path)
+        self.err_threshold = err_threshold
+        self.timeout_threshold = timeout_threshold
+        # self.rrt_threshold = rrt_threshold
+        # self.rrt_max_threshold = rrt_max_threshold
+
         self.apm_fields = [
             "time", "request", "response", "rrt", "rrt_max", "error",
             "client_error", "server_error", "timeout",
-            "error_ratio", "client_error_ratio", "server_error_ratio"
+            "error_ratio", "client_error_ratio", "server_error_ratio", "object_id",
         ]
         self.infra_fields = [
             "time", "cf", "device", "instance", "kpi_key", "kpi_name", "kubernetes_node",
@@ -150,7 +159,15 @@ class MetricAgent:
         self.DOMAIN_THRESHOLDS = {
             "cpu_usage": 80,
         }
-        self.apm_thresholds = {"error": 10, "timeout": 3}
+        self.weights = {
+            "error_ratio": 2.0,
+            "client_error_ratio": 1.5,
+            "server_error_ratio": 2.5,
+            "timeout": 1.8,
+            "rrt": 1.2,
+            "rrt_max": 2.0,
+        }
+        # self.apm_thresholds = {"error": 10, "timeout": 3}
 
     def load_apm(self, start: datetime, end: datetime, max_workers=4):
         files = []
@@ -188,32 +205,89 @@ class MetricAgent:
 
         return pd.concat(results, ignore_index=True) if results else pd.DataFrame()
 
-    def query_metrics(self, start_time: datetime, end_time: datetime):
+    def score(self, start_time: datetime, end_time: datetime) -> List:
+        scores = []
         apm = self.load_apm(start_time, end_time)
-        logging.info(f"Loaded {len(apm)} APM records from {start_time} to {end_time}")
+        print(f"Loaded {len(apm)} APM records from {start_time} to {end_time}")
+        if apm.empty:
+            return []
+        
+        for service, service_apm in apm.groupby("object_id"):
+            if service_apm.empty:
+                continue
+            s = 0.0
+            # reasons = []
+
+            if service_apm["error_ratio"].mean() > self.err_threshold:
+                delta = service_apm["error_ratio"].mean() - self.err_threshold
+                pts = self.weights["error_ratio"] * delta * 10
+                s += pts
+                scores.append({
+                    "service": service,
+                    "kpi": "error_ratio",
+                    "reason": f"Value exceeded threshold {self.err_threshold}",
+                    "max_value": service_apm["error_ratio"].max(),
+                    "timestamps": str(service_apm['time'][service_apm['error_ratio'].idxmax()]),
+                })
+                # reasons.append(f"high error_ratio: {service_apm['error_ratio'].mean():.2f}")
+
+            # if service_apm["client_error_ratio"].mean() > self.err_threshold:
+            #     delta = service_apm["client_error_ratio"].mean() - self.err_threshold
+            #     pts = self.weights["client_error_ratio"] * delta * 10
+            #     s += pts
+            #     reasons.append(f"high client_error_ratio: {service_apm['client_error_ratio'].mean():.2f}")
+
+            # if service_apm["server_error_ratio"].mean() > self.err_threshold:
+            #     delta = service_apm["server_error_ratio"].mean() - self.err_threshold
+            #     pts = self.weights["server_error_ratio"] * delta * 10
+            #     s += pts
+            #     reasons.append(f"high server_error_ratio: {service_apm['server_error_ratio'].mean():.2f}")
+
+            # 2. timeout
+            if service_apm["timeout"].mean() >= self.timeout_threshold:
+                pts = self.weights["timeout"] * (service_apm["timeout"].mean() / 10)
+                s += pts
+                scores.append({
+                    "service": service,
+                    "kpi": "timeout",
+                    "reason": f"Value exceeded threshold {self.timeout_threshold}",
+                    "max_value": service_apm["timeout"].max(),
+                    "timestamps": str(service_apm['time'][service_apm['timeout'].idxmax()]),
+                })
+
+            # 3. rrt
+            # if service_apm["rrt"].mean() > self.rrt_threshold:
+            #     pts = self.weights["rrt"] * ((service_apm["rrt"].mean() - self.rrt_threshold) / 1000)
+            #     s += pts
+            #     reasons.append(f"slow rrt: {int(service_apm['rrt'].mean())}ms")
+
+            # if service_apm["rrt_max"].mean() > self.rrt_max_threshold:
+            #     pts = self.weights["rrt_max"] * ((service_apm["rrt_max"].mean() - self.rrt_max_threshold) / 1000)
+            #     s += pts
+            #     reasons.append(f"high rrt_max: {int(service_apm['rrt_max'].mean())}ms")
+
+            # for kpi, threshold in self.apm_thresholds.items():
+            #     if service_apm[kpi].mean() > threshold:
+            #         scores.append({
+            #             "service": service,
+            #             "kpi": kpi,
+            #             "reason": f"Value exceeded domain threshold {threshold}",
+            #             "max_value": service_apm[kpi].max(),
+            #             "timestamps": str(service_apm['time'][service_apm[kpi].idxmax()]),
+            #         })
+
+        return scores
+
+    def query_metrics(self, start_time: datetime, end_time: datetime):
         infra = self.load_infra_or_other('infra/infra_pod/*.parquet', start_time, end_time)
         other = self.load_infra_or_other('other/*.parquet', start_time, end_time)
         infra_and_other = pd.concat([infra, other], ignore_index=True)
         logging.info(f"Loaded {len(infra_and_other)} infra/other records from {start_time} to {end_time}")
 
-        if apm.empty and infra_and_other.empty:
-            return {"observation": "No metric data available for analysis.", "details": {}, "events": []}
 
         anomalies = []
         details = {}
         events = []
-
-        if not apm.empty:
-            for kpi, threshold in self.apm_thresholds.items():
-                if apm[kpi].mean() > threshold:
-                    object_id = apm.loc[apm[kpi].idxmax(), "object_id"] if "object_id" in apm.columns else None
-                    details[kpi] = {
-                        "reason": f"Value exceeded domain threshold {threshold}",
-                        "max_value": apm[kpi].max(),
-                        "timestamps": str(apm['time'][apm[kpi].idxmax()]),
-                        "pod": object_id
-                    }
-                    events.append({"kpi": kpi, "type": "threshold_violation", "value": float(apm[kpi].max()), "threshold": threshold, "time": str(apm['time'][apm[kpi].idxmax()]), "pod": object_id})
 
         for pod, pod_group in infra_and_other.groupby("pod"):
             for kpi, group in pod_group.groupby("kpi_key"):

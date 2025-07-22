@@ -5,6 +5,7 @@ from typing import Counter
 import pandas as pd
 from datetime import datetime, timedelta
 import pyarrow.dataset as ds
+from exp.utils import read_parquet_with_filters, utc_to_cst
 import logging
 
 logging.basicConfig(
@@ -13,7 +14,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-from utils import read_parquet_with_filters, utc_to_cst
 
 class LogAgent:
     """
@@ -48,58 +48,40 @@ class LogAgent:
                 df = future.result()
                 if not df.empty:
                     df["k8_pod"] = df["k8_pod"].astype(str).str.replace(r"-\d+$", "", regex=True)
-                    df = df[df['message'].notna() & df['message'].str.startswith("{") & df['message'].str.contains('|'.join(self.ERROR_KEYWORDS), case=False, na=False)]
+                    df = df[df['message'].notna() & df['message'].str.startswith("{")]
+
                     results.append(df[self.fields])
 
         return pd.concat(results, ignore_index=True) if results else pd.DataFrame()
 
     
-    def inspect_logs(self, start_time: datetime, end_time: datetime):
+    def score(self, start_time: datetime, end_time: datetime):
         """
         Inspect logs between start_time and end_time for error events.
         Returns a dict with an observation and details of log events.
         """
         log = self.load_logs(start_time, end_time)
         if log.empty:
-            observation = "No log data available for analysis."
-            return {"observation": observation, "details": {}}
+            return []
         pod_groups = log.groupby(['k8_namespace', 'k8_pod'])
-        pod_analysis = {}
+        scores = []
         total_errors = 0
-
-        for (namespace, pod), group in pod_groups:
+        for (_, pod), group in pod_groups:
             pod_errors = len(group)
             total_errors += pod_errors
             
-            sample_logs = group.head(5)[["k8_node_name", "agent_name", "message", "@timestamp"]].to_dict('records')
+            # sample_logs = group.head(5)[["k8_node_name", "agent_name", "message", "@timestamp"]].to_dict('records')
             
             keyword_counts = Counter()
             for msg in group['message'].astype(str):
                 for kw in self.ERROR_KEYWORDS:
                     if kw in msg.lower():
                         keyword_counts[kw] += 1
-            
-            pod_analysis[f"{namespace}/{pod}"] = {
+
+            scores.append({
+                'service': pod,
                 'error_count': pod_errors,
-                'sample_logs': sample_logs,
-                'top_keywords': dict(keyword_counts.most_common(3))
-            }
-
-        global_keywords = Counter()
-        for msg in log['message'].astype(str):
-            for kw in self.ERROR_KEYWORDS:
-                if kw in msg.lower():
-                    global_keywords[kw] += 1
-
-        observation = (
-            f"Detected {total_errors} error log entries across {len(pod_analysis)} pods. "
-            f"Top global keywords: {', '.join([k for k, _ in global_keywords.most_common(3)])}"
-        )
-        
-        details = {
-            'pods': pod_analysis,
-            'global_keyword_summary': dict(global_keywords.most_common(5))
-        }
-        
-        logging.info(f"LogAgent: {observation, details}")
-        return {"observation": observation, "details": details}
+                # 'sample_logs': sample_logs,
+                # 'top_keywords': dict(keyword_counts.most_common(3))
+            })
+        return scores

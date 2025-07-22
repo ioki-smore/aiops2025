@@ -9,10 +9,10 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-ROOT_DIR = Path("phaseone")
+ROOT_DIR = Path("phasetwo")
 
-START_DATE = datetime.strptime("2025-06-06", "%Y-%m-%d")
-END_DATE = datetime.strptime("2025-06-14", "%Y-%m-%d")
+START_DATE = datetime.strptime("2025-06-17", "%Y-%m-%d")
+END_DATE = datetime.strptime("2025-06-29", "%Y-%m-%d")
 
 def daterange(start_date: datetime, end_date: datetime):
     for n in range((end_date - start_date).days + 1):

@@ -1,3 +1,4 @@
+import logging
 import os
 import json
 import re
@@ -5,13 +6,13 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict
 
-from agent.metric import MetricAgent
-from agent.trace import TraceAgent
-from agent.log import LogAgent
-from agent.judge import JudgeAgent
+from exp.agent.metric import MetricAgent
+from exp.agent.trace import TraceAgent
+from exp.agent.log import LogAgent
+from exp.agent.judge import JudgeAgent
 
-DATA_PATH = 'phaseone/'
-INPUT_JSON = 'phaseone/input.json'
+DATA_PATH = 'phasetwo/'
+INPUT_JSON = 'phasetwo/input.json'
 OUTPUT_JSONL = 'submission/output.jsonl'
 
 def parse_time_range(description: str):
@@ -30,7 +31,7 @@ def parse_time_range(description: str):
         return None, None
 
     try:
-        start_time = datetime.fromisoformat((start_str).replace('Z', '+00:00'))
+        start_time = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
     except ValueError:
         start_time = datetime.fromisoformat(start_str)
     try:
@@ -49,7 +50,7 @@ def process_anomaly(item: Dict, metric_agent: MetricAgent, trace_agent: TraceAge
     """
     Process a single anomaly item.
     """
-    uuid = item.get("uuid", "")
+    uuid = item.get("uuid")
     description = item.get("Anomaly Description", "")
     start_time, end_time = parse_time_range(description)
     if not start_time or not end_time:
@@ -62,21 +63,24 @@ def process_anomaly(item: Dict, metric_agent: MetricAgent, trace_agent: TraceAge
         }
     analysis = {}
     # Query each agent
-    metric_result = metric_agent.query_metrics(start_time, end_time)
-    trace_result = trace_agent.analyze_spans(start_time, end_time)
-    log_result = log_agent.inspect_logs(start_time, end_time)
+    metric_result = metric_agent.score(start_time, end_time)
+    trace_result = trace_agent.score(start_time, end_time)
+    log_result = log_agent.score(start_time, end_time)
+    print(metric_result), print(trace_result), print(log_result)
 
-    metric_obs = metric_result.get("observation", "")
-    trace_obs = trace_result.get("observation", "")
-    log_obs = log_result.get("observation", "")
+    # metric_obs = metric_result.get("observation", "")
+    # trace_obs = trace_result.get("observation", "")
+    # log_obs = log_result.get("observation", "")
 
     # Use JudgeAgent to produce final analysis
-    analysis = judge_agent.analyze(uuid, description, metric_obs, trace_obs, log_obs)
+    analysis = judge_agent.analyze(uuid, description, metric_result, trace_result, log_result)
     return analysis
 
 # async def main():
 def main():
     # Ensure output directory exists
+    logger = logging.getLogger(__name__)
+    logger.info("Starting analysis of anomalies...")
     os.makedirs(os.path.dirname(OUTPUT_JSONL), exist_ok=True)
 
     # Initialize agents with data paths
@@ -125,7 +129,8 @@ def main():
 
     completed = 0
     all_tasks = len(anomalies)
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    output = open(OUTPUT_JSONL, 'w', encoding='utf-8')
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(process_anomaly, item, metric_agent, trace_agent, log_agent, judge_agent)
                    for item in anomalies]
         for future in futures:
@@ -134,14 +139,11 @@ def main():
                 results.append(res)
                 completed += 1
                 print(f"Processed {completed}/{all_tasks} anomalies.", end='\r')
+                output.write(json.dumps(res, ensure_ascii=False) + "\n")
             else:
                 print("Warning: Received None result from processing an anomaly.")
-
-    # Write results to output JSONL
-    with open(OUTPUT_JSONL, 'w', encoding='utf-8') as f:
-        for result in results:
-            f.write(json.dumps(result, ensure_ascii=False) + "\\n")
-
+            
+    output.close()
     print(f"Analysis complete. Results written to {OUTPUT_JSONL}.")
 
 if __name__ == "__main__":

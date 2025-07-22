@@ -14,7 +14,8 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-from utils import read_parquet_with_filters, utc_to_cst
+from collections import defaultdict
+from exp.utils import read_parquet_with_filters, utc_to_cst
 
 
 def parse_tags_array(tags_array):
@@ -110,7 +111,7 @@ def group_by_structure(traces: Dict[str, Dict]) -> Dict[str, List[str]]:
     return groups
 
 
-def analyze_trace_group_durations(traces: Dict[str, Dict], trace_ids: List[str], threshold_sigma=3):
+def analyze_trace_group_durations(traces: Dict[str, Dict[str, Dict]], trace_ids: List[str], threshold_sigma=3):
     durations = [sum([s['duration'] for s in traces[tid]['spans'].values()]) for tid in trace_ids]
     mean, std = np.mean(durations), np.std(durations)
     if std == 0:
@@ -148,7 +149,7 @@ def detect_self_loops(span_map: Dict, children_map: Dict) -> List[List[str]]:
     return loops
 
 
-def get_service_name(span_map: Dict, span_id: str) -> Optional[str]:
+def get_service_name(span_map: Dict[str, Dict[str, Dict]], span_id: str) -> Optional[str]:
     span = span_map.get(span_id)
     if not span:
         return None
@@ -158,7 +159,7 @@ def get_service_name(span_map: Dict, span_id: str) -> Optional[str]:
     return process.get('serviceName')
 
 
-def detect_service_self_calls(span_map: Dict, children_map: Dict) -> List[str]:
+def detect_service_self_calls(span_map: Dict[str, Dict[str, Dict]], children_map: Dict[str, List[str]]) -> List[str]:
     self_calls = []
     for parent_id, children in children_map.items():
         parent_service = get_service_name(span_map, parent_id)
@@ -175,7 +176,7 @@ class TraceAgent:
         self.fields = ["traceID", "spanID", "operationName", "references", "startTimeMillis", "duration", "tags", "logs", "process"]
         self.spans_fields = ["traceID", "spanID", "operationName", "references", "start", "end", "duration", "tags", "logs", "process", "pod"]
 
-    def load_spans(self, start: datetime, end: datetime, max_workers=8):
+    def load_spans(self, start: datetime, end: datetime, max_workers=4):
         start_cst = utc_to_cst(start) - timedelta(hours=1)
         end_cst = utc_to_cst(end) + timedelta(hours=1)
 
@@ -203,8 +204,12 @@ class TraceAgent:
 
         return pd.concat(results, ignore_index=True) if results else pd.DataFrame()
 
-    def analyze_spans(self, start_time: datetime, end_time: datetime):
+    def score(self, start_time: datetime, end_time: datetime):
         spans = self.load_spans(start_time, end_time)
+        if spans.empty:
+            print(f"No spans found between {start_time} and {end_time}.")
+            return []
+        spans.dropna(subset=self.spans_fields, inplace=True)
         grouped = spans.groupby('traceID')
 
         valid_trace_ids = []
@@ -215,56 +220,116 @@ class TraceAgent:
                 valid_trace_ids.append(trace_id)
 
         spans = spans[spans['traceID'].isin(valid_trace_ids)]
-        logging.info(f"Analyzing {len(valid_trace_ids)} valid traces from {start_time} to {end_time}")
-        traces = build_trace(spans)
-        structure_groups = group_by_structure(traces)
+        print(f"Analyzing {len(valid_trace_ids)} valid traces from {start_time} to {end_time}")
+        # traces = build_trace(spans)
+        # structure_groups = group_by_structure(traces)
 
-        issues = []
-        details = {}
+        scores = []
+        operations = spans["operationName"].unique().tolist()
+        operation_threshold = {o: spans[spans["operationName"] == o]["duration"].mean() + 3 * spans[spans["operationName"] == o]["duration"].std() for o in operations}
+        # spans["rpc.service"] = spans["tags"].apply(lambda tags: parse_tags_array(tags)['rpc.service'])
+        # spans["rpc.method"] = spans["tags"].apply(lambda tags: parse_tags_array(tags)['rpc.method'])
+        # spans = spans.dropna(subset=["rpc.service", "rpc.method", "duration"])
+        traces = spans.groupby('traceID')
+        candidate_service = []
+        for trace_id, spans in traces:
 
-        long_traces = []
-        for _, tids in structure_groups.items():
-            outliers = analyze_trace_group_durations(traces, tids)
-            if outliers:
-                long_traces.extend(outliers)
+            for _, span in spans.iterrows():
+                tags = parse_tags_array(span.get("tags", []))
+                if tags.get("span.kind", "") != "client":
+                    continue
+                service = span["pod"]
+                duration = span["duration"]
+                status_code = tags.get("status.code", "0")
+                http_status_code = tags.get("http.status_code", "200")
+                operation = span["operationName"]
+                logs = span.get("logs", [])
 
-        if long_traces:
-            issues.append("long_duration_traces")
-            details['long_duration_traces'] = long_traces
+                score = 0
+                reason = []
 
-        error_spans = detect_error_spans(spans)
-        if error_spans:
-            issues.append("error_spans")
-            details['error_spans'] = error_spans
+                # Check for anomalies
+                if status_code != "0" and http_status_code != "200":
+                    score += 10
+                    reason.append("status_code != 0")
 
-        unbalanced_logs = detect_unbalanced_logs(spans)
-        if unbalanced_logs:
-            issues.append("unbalanced_logs")
-            details['unbalanced_logs'] = unbalanced_logs
+                if duration > operation_threshold.get(operation, 0):
+                    score += 7
+                    reason.append(f"duration {duration} exceeds threshold {operation_threshold.get(operation)}")
 
-        large_messages = detect_large_message(spans)
-        if large_messages:
-            issues.append("large_messages")
-            details['large_messages'] = large_messages
+                for log in logs:
+                    fields = log.get("fields", [])
+                    for field in fields:
+                        if "error" in str(field.get("value", "")).lower():
+                            score += 10
+                            reason.append("log contains error")
+                            break
+                        # if field.get("key") == "message.uncompressed_size":
+                        #     size = int(field.get("value", "0"))
+                        #     if size > 1024:
+                        #         score += 3
+                        #         reason.append(f"large message size {size} bytes")
 
-        for tid in valid_trace_ids:
-            trace = traces[tid]
+                if score > 0 and (service, operation) not in candidate_service:
+                    scores.append({
+                        # "traceID": span["traceID"],
+                        # "spanID": span["spanID"],
+                        "service": service,
+                        "operation": operation,
+                        "score": score,
+                        "reason": reason,
+                        # "startTimeMillis": span["start"],
+                        # "duration": duration
+                    })
+                    candidate_service.append((service, operation))
+            trace = build_trace(spans)
             loops = detect_self_loops(trace['spans'], trace['children'])
             if loops:
-                issues.append("self_loops")
-                details.setdefault('self_loops', []).extend(loops)
+                scores.append({
+                    "traceID": trace_id,
+                    "issue": "self_loops",
+                    "details": loops
+                })
 
             self_calls = detect_service_self_calls(trace['spans'], trace['children'])
             if self_calls:
-                issues.append("service_self_calls")
-                details.setdefault('service_self_calls', []).extend(self_calls)
+                scores.append({
+                    "traceID": trace_id,
+                    "issue": "service_self_calls",
+                    "details": self_calls
+                })
 
-        observation = f"Detected issues: {', '.join(set(issues))}." if issues else "No significant anomalies detected in traces."
-        # logging.info({
-        #     "observation": observation,
-        #     "details": details,
-        # })
-        return {
-            "observation": observation,
-            "details": details
-        }
+        grouped = defaultdict(list)
+        
+        for s in scores:
+            if "service" in s and s["score"] >= 5:
+                threshold_info = next((r for r in s["reason"] if "duration" in r and "threshold" in r), "")
+                if threshold_info:
+                    try:
+                        parts = threshold_info.split()
+                        duration = float(parts[1])
+                        threshold = float(parts[-1])
+                        exceed_ratio = round(duration / threshold, 2)
+                    except:
+                        exceed_ratio = 1.0
+                else:
+                    exceed_ratio = 1.0
+
+                grouped[s["service"]].append({
+                    "operation": s["operation"],
+                    "score": s["score"],
+                    "exceed_ratio": exceed_ratio,
+                    "reason": s["reason"]
+                })
+
+        compressed = []
+        for service, ops in grouped.items():
+            ops = sorted(ops, key=lambda x: (-x["score"], -x["exceed_ratio"]))
+            top_ops = ops[:2]
+            compressed.append({
+                "service": service,
+                "top_operations": top_ops
+            })
+
+        compressed = sorted(compressed, key=lambda x: -x["top_operations"][0]["score"])[:5]
+        return compressed
