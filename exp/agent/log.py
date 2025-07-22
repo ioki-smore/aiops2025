@@ -56,15 +56,13 @@ class LogAgent:
 
     
     def score(self, start_time: datetime, end_time: datetime):
-
         """
         Inspect logs between start_time and end_time for error events.
         Returns a dict with an observation and details of log events.
         """
         log = self.load_logs(start_time, end_time)
         if log.empty:
-            observation = "No log data available for analysis."
-            return {"observation": observation, "details": {}}
+            return []
         pod_groups = log.groupby(['k8_namespace', 'k8_pod'])
         scores = []
         total_errors = 0

@@ -87,7 +87,7 @@ def main():
     metric_agent = MetricAgent(DATA_PATH)
     trace_agent = TraceAgent(DATA_PATH)
     log_agent = LogAgent(DATA_PATH)
-    judge_agent = JudgeAgent()
+    judge_agent = JudgeAgent(None, None)
 
     # Load anomalies from input.json
     try:
@@ -130,7 +130,7 @@ def main():
     completed = 0
     all_tasks = len(anomalies)
     output = open(OUTPUT_JSONL, 'w', encoding='utf-8')
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(process_anomaly, item, metric_agent, trace_agent, log_agent, judge_agent)
                    for item in anomalies]
         for future in futures:
@@ -139,7 +139,7 @@ def main():
                 results.append(res)
                 completed += 1
                 print(f"Processed {completed}/{all_tasks} anomalies.", end='\r')
-                output.write(json.dumps(res, ensure_ascii=False) + "\\n")
+                output.write(json.dumps(res, ensure_ascii=False) + "\n")
             else:
                 print("Warning: Received None result from processing an anomaly.")
             

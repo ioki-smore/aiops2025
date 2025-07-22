@@ -206,6 +206,9 @@ class TraceAgent:
 
     def score(self, start_time: datetime, end_time: datetime):
         spans = self.load_spans(start_time, end_time)
+        if spans.empty:
+            print(f"No spans found between {start_time} and {end_time}.")
+            return []
         spans.dropna(subset=self.spans_fields, inplace=True)
         grouped = spans.groupby('traceID')
 
