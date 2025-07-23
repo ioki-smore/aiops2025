@@ -11,7 +11,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from collections import defaultdict
-from exp.utils.input import read_parquet_with_filters
+from exp.utils.input import load_parquet
 from exp.utils.time import utc_to_cst
 
 
@@ -190,7 +190,7 @@ class TraceAgent:
 
         results = []
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(read_parquet_with_filters, Path(f), self.fields): f for f in files}
+            futures = {pool.submit(load_parquet, Path(f), self.fields): f for f in files}
             for future in as_completed(futures):
                 df = future.result()
                 if not df.empty:

@@ -86,7 +86,7 @@ class JudgeAgent:
         )
         # print(response.choices[0].message.model_dump_json(exclude_none=True, exclude_unset=True))
         response = json.loads(json.loads(response.choices[0].message.model_dump_json(exclude_none=True, exclude_unset=True))['content'])
-        print(f"JudgeAgent: LLM response: {response}")
+        logger.info(f"JudgeAgent: LLM response: {response}")
         # response = extract_json_from_response(response)
         print(response.get("component", ""))
         output = {

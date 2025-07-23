@@ -9,7 +9,7 @@ import pyarrow.dataset as ds
 import numpy as np
 from pandas import Series
 import ruptures as rpt
-from exp.utils.input import read_parquet_with_filters
+from exp.utils.input import load_parquet
 from exp.utils.time import daterange
 from sklearn.decomposition import PCA
 from tslearn.clustering import TimeSeriesKMeans
@@ -166,7 +166,7 @@ class MetricAgent:
         results = []
         filter = (ds.field("time") >= start) & (ds.field("time") <= end)
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(read_parquet_with_filters, Path(f), self.apm_fields, filter): f for f in files}
+            futures = {pool.submit(load_parquet, Path(f), self.apm_fields, filter): f for f in files}
             for future in as_completed(futures):
                 df = future.result()
                 if not df.empty:
@@ -182,7 +182,7 @@ class MetricAgent:
         results = []
         filter = (ds.field("time") >= start) & (ds.field("time") <= end)
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(read_parquet_with_filters, Path(f), filter=filter): f for f in files}
+            futures = {pool.submit(load_parquet, Path(f), filter=filter): f for f in files}
             for future in as_completed(futures):
                 df = future.result()
                 if not df.empty:
