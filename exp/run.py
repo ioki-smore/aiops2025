@@ -407,7 +407,7 @@ class Controller:
                 print(f"Failed to parse time range in description: {desc}")
                 return {"uuid": uuid, "error": "Failed to parse time range."}
         completed = 0
-        with ThreadPoolExecutor(max_workers=64) as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_task = {executor.submit(analyze_task, task): task for task in tasks}
             for future in as_completed(future_to_task):
                 try:
@@ -421,9 +421,9 @@ class Controller:
         return results
 
 
-input = json.load(open("phaseone/input.json", "r", encoding="utf-8"))
+input = json.load(open("phasetwo/input.json", "r", encoding="utf-8"))
 if __name__ == "__main__":
-    ctrl = Controller("phaseone/")
+    ctrl = Controller("phasetwo/")
     
     print("Starting batch analysis...")
     print(f"Total tasks: {len(input)}")

@@ -1,58 +1,74 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import glob
+import logging
+import json
+import pandas as pd
+import pyarrow.dataset as ds
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Counter
-import pandas as pd
 from datetime import datetime, timedelta
-import pyarrow.dataset as ds
-from exp.utils import read_parquet_with_filters, utc_to_cst
-import logging
+from exp.utils.input import read_parquet_with_filters
+from exp.utils.time import utc_to_cst
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+logger = logging.getLogger(__name__)
 
 
+
+def has_error_key(message: str) -> bool:
+    try:
+        message = json.loads(message)
+        return 'error' in message
+    except json.JSONDecodeError:
+        return False
+
+"""
+k8_namespace	hipstershop
+timestamp	2025-06-05T16:00:27.724Z
+agent_name	filebeat-filebeat-nx7q2
+k8_pod	frontend-2
+message	{"http.req.id":"f86f5b1e-cd6d-40b2-bc62-21d870517fbb","http.req.method":"GET","http.req.path":"/product/2ZYFJ3GM2N","http.resp.bytes":8014,"http.resp.status":200,"http.resp.took_ms":119,"message":"request complete","session":"bc7eadb2-b959-42f7-ab22-24a95c25f3b5","severity":"debug","timestamp":"2025-06-05T16:00:27.724357829Z"}
+k8_node_name	aiops-k8s-04
+"""
 class LogAgent:
     """
     Enhanced LogAgent with structured log filtering and keyword clustering.
     """
     ERROR_KEYWORDS = ['warning', 'error', 'exception', 'fail', 'timeout', 'critical', 'panic']
-    def __init__(self, root_path: str):
-        print(f"Initializing LogAgent with root path: {root_path}")
-        self.root_path = Path(root_path)
-        self.fields = ["k8_namespace", "k8_pod", "k8_node_name", "agent_name", "message", "@timestamp"]
-        
-    def load_logs(self, start: datetime, end: datetime, max_workers=8):
-        start_cst = utc_to_cst(start) - timedelta(hours=1)
-        end_cst = utc_to_cst(end) + timedelta(hours=1)
+    def __init__(self, dataset: str):
+        print(f"Initializing LogAgent with root path: {dataset}")
+        self.root_path = Path(dataset)
+        self.fields = [
+            "k8_namespace", "@timestamp", 
+            # "agent_name", 
+            "k8_pod", "message", "k8_node_name"
+        ]
 
+    def load_logs(self, start: datetime, end: datetime, max_workers=4):
+        current = utc_to_cst(start).replace(minute=0, second=0, microsecond=0)
+        end_cst = utc_to_cst(end).replace(minute=0, second=0, microsecond=0)
+       
         files = []
-        current = start_cst.replace(minute=0, second=0, microsecond=0)
-        end_hour = end_cst.replace(minute=0, second=0, microsecond=0)
-
-        while current <= end_hour:
+        while current <= end_cst:
+            logger.info(f"Searching logs for {current.strftime('%Y-%m-%d %H:%M:%S')}")
             day = current.strftime("%Y-%m-%d")
             hour = current.strftime("%H")
             file_pattern = f"{self.root_path}/{day}/log-parquet/log_filebeat-server_{day}_{hour}-00-00.parquet"
             files.extend(glob.glob(file_pattern))
             current += timedelta(hours=1)
 
-        results = []
+        logs = []
         filter = (ds.field("@timestamp") >= start) & (ds.field("@timestamp") <= end)
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {pool.submit(read_parquet_with_filters, Path(f), self.fields, filter): f for f in files}
             for future in as_completed(futures):
-                df = future.result()
-                if not df.empty:
-                    df["k8_pod"] = df["k8_pod"].astype(str).str.replace(r"-\d+$", "", regex=True)
-                    df = df[df['message'].notna() & df['message'].str.startswith("{")]
+                log = future.result()
+                if not log.empty:
+                    log = log[log['message'].notna() & log['message'].str.startswith("{")]
 
-                    results.append(df[self.fields])
+                    logs.append(log[self.fields])
 
-        return pd.concat(results, ignore_index=True) if results else pd.DataFrame()
+        return pd.concat(logs, ignore_index=True) if logs else pd.DataFrame()
 
     
     def score(self, start_time: datetime, end_time: datetime):
@@ -63,25 +79,20 @@ class LogAgent:
         log = self.load_logs(start_time, end_time)
         if log.empty:
             return []
-        pod_groups = log.groupby(['k8_namespace', 'k8_pod'])
+        pod_groups = log.groupby(['k8_namespace', 'k8_node_name', 'k8_pod'])
         scores = []
-        total_errors = 0
-        for (_, pod), group in pod_groups:
-            pod_errors = len(group)
-            total_errors += pod_errors
-            
-            # sample_logs = group.head(5)[["k8_node_name", "agent_name", "message", "@timestamp"]].to_dict('records')
-            
-            keyword_counts = Counter()
-            for msg in group['message'].astype(str):
-                for kw in self.ERROR_KEYWORDS:
-                    if kw in msg.lower():
-                        keyword_counts[kw] += 1
+        # message keys: ['severity', 'time', 'message', 'pid', 'hostname', 'name', 
+        # 'v', 'logging.googleapis.com/trace', 'logging.googleapis.com/spanId', 'logging.googleapis.com/traceSampled', 
+        # 'http.req.id', 'http.req.method', 'http.req.path', 'session', 'timestamp', 'currency', 'id', 'http.resp.bytes', 'http.resp.status', 'http.resp.took_ms', 'curr.new', 'curr.old', 'order', 'logEvent', 'product', 'quantity', 'error']
+        for (ns, node, pod), group in pod_groups:
+            error = int(group['message'].apply(has_error_key).sum())
+            if error == 0:
+                continue
 
+            # TODO: add more detailed scoring logic based on error types or counts
+            logger.info(f"Pod {pod} in namespace {ns} on node {node} has {error} error messages.")
             scores.append({
                 'service': pod,
-                'error_count': pod_errors,
-                # 'sample_logs': sample_logs,
-                # 'top_keywords': dict(keyword_counts.most_common(3))
+                'error_count': error,
             })
         return scores

@@ -1,57 +1,24 @@
 import logging
-import os
 import json
-import re
-from datetime import datetime
+import argparse
+
 from concurrent.futures import ThreadPoolExecutor
+import os
 from typing import Dict
+from datetime import datetime
 
 from exp.agent.metric import MetricAgent
 from exp.agent.trace import TraceAgent
 from exp.agent.log import LogAgent
 from exp.agent.judge import JudgeAgent
+from exp.utils.log import setup_logger
+from exp.utils.time import parse_time_range
 
-DATA_PATH = 'phasetwo/'
-INPUT_JSON = 'phasetwo/input.json'
-OUTPUT_JSONL = 'submission/output.jsonl'
-
-def parse_time_range(description: str):
-    """
-    Parse start and end UTC times from the anomaly description.
-    Returns (start_time, end_time) as datetime objects.
-    """
-    # Regular expression to find datetime strings (e.g., 2023-07-10T12:00:00Z)
-    pattern = r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z'
-    matches = re.findall(pattern, description)
-    if len(matches) >= 2:
-        start_str, end_str = str(matches[0]), str(matches[1])
-    elif len(matches) == 1:
-        start_str = end_str = str(matches[0])
-    else:
-        return None, None
-
-    try:
-        start_time = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
-    except ValueError:
-        start_time = datetime.fromisoformat(start_str)
-    try:
-        end_time = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
-    except ValueError:
-        end_time = datetime.fromisoformat(end_str)
-
-    # Remove timezone info for compatibility with naive timestamps
-    if start_time.tzinfo:
-        start_time = start_time.replace(tzinfo=None)
-    if end_time.tzinfo:
-        end_time = end_time.replace(tzinfo=None)
-    return start_time, end_time
+logger = logging.getLogger(__name__)
 
 def process_anomaly(item: Dict, metric_agent: MetricAgent, trace_agent: TraceAgent, log_agent: LogAgent, judge_agent: JudgeAgent):
-    """
-    Process a single anomaly item.
-    """
-    uuid = item.get("uuid")
-    description = item.get("Anomaly Description", "")
+    uuid = str(item.get("uuid", ""))
+    description = str(item.get("Anomaly Description", ""))
     start_time, end_time = parse_time_range(description)
     if not start_time or not end_time:
         print(f"Warning: Could not parse time range from description: {description}")
@@ -66,7 +33,9 @@ def process_anomaly(item: Dict, metric_agent: MetricAgent, trace_agent: TraceAge
     metric_result = metric_agent.score(start_time, end_time)
     trace_result = trace_agent.score(start_time, end_time)
     log_result = log_agent.score(start_time, end_time)
-    print(metric_result), print(trace_result), print(log_result)
+    print(metric_result)
+    print(trace_result)
+    print(log_result)
 
     # metric_obs = metric_result.get("observation", "")
     # trace_obs = trace_result.get("observation", "")
@@ -76,25 +45,34 @@ def process_anomaly(item: Dict, metric_agent: MetricAgent, trace_agent: TraceAge
     analysis = judge_agent.analyze(uuid, description, metric_result, trace_result, log_result)
     return analysis
 
-# async def main():
-def main():
-    # Ensure output directory exists
-    logger = logging.getLogger(__name__)
+def main(args: argparse.Namespace, uuid: str):
+    dataset = str(args.dataset)
+    log_file = f"results/{dataset}/logs/{uuid}.log"
+    log_level = str(args.log_level).upper()
+    input = f"{dataset}/input.json"
+    output = f"results/{dataset}/answer/{uuid}-output.jsonl"
+    max_workers = int(args.max_workers)
+
+    # Setup logging
+    setup_logger(log_file, log_level)
+    logger.info(f"Logger initialized. Log file: {log_file}, Log level: {log_level}")
+    logger.info(f"Dataset: {dataset}, UUID: {uuid}, Max Workers: {max_workers}")
+    logger.info(f"Input file: {input}, Output file: {output}")
+
     logger.info("Starting analysis of anomalies...")
-    os.makedirs(os.path.dirname(OUTPUT_JSONL), exist_ok=True)
 
     # Initialize agents with data paths
-    metric_agent = MetricAgent(DATA_PATH)
-    trace_agent = TraceAgent(DATA_PATH)
-    log_agent = LogAgent(DATA_PATH)
+    metric_agent = MetricAgent(dataset)
+    trace_agent = TraceAgent(dataset)
+    log_agent = LogAgent(dataset)
     judge_agent = JudgeAgent(None, None)
 
     # Load anomalies from input.json
     try:
-        with open(INPUT_JSON, 'r') as f:
+        with open(input, 'r') as f:
             anomalies = json.load(f)
     except Exception as e:
-        print(f"Failed to read {INPUT_JSON}: {e}")
+        print(f"Failed to read {input}: {e}")
         anomalies = []
 
     # If no anomalies provided, create a dummy example for testing
@@ -104,49 +82,33 @@ def main():
 
     # Process anomalies concurrently
     results = []
-    # 批量处理（推荐用分页分批发送）
-    # batch_inputs = []
-    # for item in anomalies[:1]:
-    #     uuid = item.get("uuid")
-    #     desc = item.get("Anomaly Description", "")
-    #     start_time, end_time = parse_time_range(desc)
-    #     if not start_time or not end_time:
-    #         continue
-
-    #     metric = metric_agent.query_metrics(start_time, end_time)
-    #     trace = trace_agent.analyze_spans(start_time, end_time)
-    #     log = log_agent.inspect_logs(start_time, end_time)
-
-    #     batch_inputs.append({
-    #         "uuid": uuid,
-    #         "description": desc,
-    #         "metric_obs": metric.get("observation", ""),
-    #         "trace_obs": trace.get("observation", ""),
-    #         "log_obs": log.get("observation", "")
-    #     })
-
-    # results = await judge_agent.async_analyze_batch(batch_inputs)
 
     completed = 0
     all_tasks = len(anomalies)
-    output = open(OUTPUT_JSONL, 'w', encoding='utf-8')
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(process_anomaly, item, metric_agent, trace_agent, log_agent, judge_agent)
-                   for item in anomalies]
+    os.makedirs(os.path.dirname(output), exist_ok=True)
+    o = open(output, 'w', encoding='utf-8')
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(process_anomaly, item, metric_agent, trace_agent, log_agent, judge_agent) for item in anomalies[:1]]
         for future in futures:
             res = future.result()
             if res:
                 results.append(res)
                 completed += 1
                 print(f"Processed {completed}/{all_tasks} anomalies.", end='\r')
-                output.write(json.dumps(res, ensure_ascii=False) + "\n")
+                o.write(json.dumps(res, ensure_ascii=False) + "\n")
             else:
                 print("Warning: Received None result from processing an anomaly.")
-            
-    output.close()
-    print(f"Analysis complete. Results written to {OUTPUT_JSONL}.")
+    o.flush() 
+    o.close()
+    print(f"Analysis complete. Results written to {output}.")
 
 if __name__ == "__main__":
-    # import asyncio
-    # asyncio.run(main())
-    main()
+
+    uuid = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    # Argument parser for command line options
+    parser = argparse.ArgumentParser(description="Analyze anomalies using various agents.")
+    parser.add_argument('--dataset', type=str, default="phasetwo", help='Path to the data directory.')
+    parser.add_argument('--max_workers', type=int, default=2, help='Number of worker threads for processing anomalies.')
+    parser.add_argument('--log_level', type=str, default='INFO', help='Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).')
+    args = parser.parse_args()
+    main(args, uuid)

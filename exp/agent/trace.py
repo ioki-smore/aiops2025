@@ -8,14 +8,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import glob
 import logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+logger = logging.getLogger(__name__)
 
 from collections import defaultdict
-from exp.utils import read_parquet_with_filters, utc_to_cst
+from exp.utils.input import read_parquet_with_filters
+from exp.utils.time import utc_to_cst
 
 
 def parse_tags_array(tags_array):

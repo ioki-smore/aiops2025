@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 import os
@@ -6,11 +5,16 @@ from openai import OpenAI
 import re
 import json
 from typing import Dict, Any
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+
+logger = logging.getLogger(__name__)
+
+format = """{
+    "analysis": (Your analysis of the code execution result from Executor in the last step, with detailed reasoning of 'what have been done' and 'what can be derived'. Respond 'None' if it is the first step.),
+    "completed": ("True" if you believe the issue is resolved, and an answer can be derived in the 'instruction' field. Otherwise "False"),
+    "instruction": (Your instruction for the Executor to perform via code execution in the next step. Do not involve complex multi-step instruction. Keep your instruction atomic, with clear request of 'what to do' and 'how to do'. Respond a summary by yourself if you believe the issue is resolved. Respond a summary by yourself if you believe the issue is resolved. Respond a summary by yourself if you believe the issue is resolved.)
+}
+(DO NOT contain "```json" and "```" tags. DO contain the JSON object with the brackets "{}" only. Use '\\n' instead of an actual newline character to ensure JSON compatibility when you want to insert a line break within a string.)"""
+
 
 def extract_json_from_response(content: str) -> Dict[str, Any]:
     match = re.search(r"```json\s*(\{.*?\})\s*```", content, re.DOTALL)
@@ -39,11 +43,11 @@ class JudgeAgent:
     """
 
     def __init__(self, api_key: str | None, api_url: str | None):
-        print("JudgeAgent: Initializing JudgeAgent")
+        logger.info("JudgeAgent: Initializing JudgeAgent")
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
         self.api_url = api_url or os.getenv("DEEPSEEK_API_URL")
-        # if not self.api_key or not self.api_url:
-            # print("JudgeAgent: Warning - DeepSeek-LLM API key or URL not provided. LLM calls will be skipped.")
+        if not self.api_key or not self.api_url:
+            logger.warning("JudgeAgent: DeepSeek-LLM API key or URL not provided. LLM calls will be skipped.")
 
     def analyze(self, uuid: str, description: str, metric_obs: str, trace_obs: str, log_obs: str):
         """
@@ -92,57 +96,3 @@ class JudgeAgent:
             "reasoning_trace": response.get("reasoning_trace", [])
         }
         return output
-    
-    async def async_analyze_batch(self, inputs: list[Dict[str, str]]) -> list[Dict[str, Any]]:
-        loop = asyncio.get_event_loop()
-        tasks = [
-            loop.run_in_executor(None, self.analyze, item["uuid"], item["description"], item["metric_obs"], item["trace_obs"], item["log_obs"])
-            for item in inputs
-        ]
-        return await asyncio.gather(*tasks)
-
-        # try:
-        #     response = re.sub(r'^```json\s*|\s*```$', '', response.strip())
-        #     res = json.loads(response)
-        #     return (
-        #         res.get("reason", ""),
-        #         res.get("trace_reason", ""),
-        #         res.get("log_reason", "")
-        #     )
-        # except Exception as e:
-        #     print("LLM failed to parse response")
-        #     print(f"LLM Response: {response}")
-        #     return "error", "LLM failed to parse", "LLM failed to parse"
-        
-        # headers = {'Authorization': f'Bearer {self.api_key}'} if self.api_key else {}
-        # payload = {"prompt": prompt}
-
-        # # Call the DeepSeek-LLM API
-        # if self.api_key and self.api_url:
-        #     try:
-        #         response = requests.post(self.api_url, headers=headers, json=payload, timeout=10)
-        #         response.raise_for_status()
-        #         result = response.json()
-        #         # Include uuid in the final output
-        #         output = {
-        #             "uuid": uuid,
-        #             "component": result.get("component", ""),
-        #             "reason": result.get("reason", ""),
-        #             "reasoning_trace": result.get("reasoning_trace", [])
-        #         }
-        #         return output
-        #     except Exception as e:
-        #         print(f"JudgeAgent: LLM request failed: {e}")
-
-        # # Fallback if LLM is not used or fails: use the given observations
-        # fallback = {
-        #     "uuid": uuid,
-        #     "component": "Unknown",  # Could attempt heuristics or defaults here
-        #     "reason": "Unable to determine root cause automatically.",
-        #     "reasoning_trace": [
-        #         {"step": 1, "action": "QueryMetrics", "observation": metric_obs},
-        #         {"step": 2, "action": "TraceCheck", "observation": trace_obs},
-        #         {"step": 3, "action": "LogInspection", "observation": log_obs}
-        #     ]
-        # }
-        # return fallback
