@@ -16,7 +16,9 @@ from exp.utils.time import parse_time_range
 
 logger = logging.getLogger(__name__)
 
-def process_anomaly(item: Dict, metric_agent: MetricAgent, trace_agent: TraceAgent, log_agent: LogAgent, judge_agent: JudgeAgent):
+
+def process_anomaly(item: Dict, metric_agent: MetricAgent, trace_agent: TraceAgent, log_agent: LogAgent,
+                    judge_agent: JudgeAgent):
     uuid = str(item.get("uuid", ""))
     description = str(item.get("Anomaly Description", ""))
     start_time, end_time = parse_time_range(description)
@@ -44,6 +46,7 @@ def process_anomaly(item: Dict, metric_agent: MetricAgent, trace_agent: TraceAge
     # Use JudgeAgent to produce final analysis
     analysis = judge_agent.analyze(uuid, description, metric_result, trace_result, log_result)
     return analysis
+
 
 def main(args: argparse.Namespace, uuid: str):
     dataset = str(args.dataset)
@@ -88,7 +91,8 @@ def main(args: argparse.Namespace, uuid: str):
     os.makedirs(os.path.dirname(output), exist_ok=True)
     o = open(output, 'w', encoding='utf-8')
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(process_anomaly, item, metric_agent, trace_agent, log_agent, judge_agent) for item in anomalies[:1]]
+        futures = [executor.submit(process_anomaly, item, metric_agent, trace_agent, log_agent, judge_agent) for item in
+                   anomalies[1:2]]
         for future in futures:
             res = future.result()
             if res:
@@ -98,17 +102,18 @@ def main(args: argparse.Namespace, uuid: str):
                 o.write(json.dumps(res, ensure_ascii=False) + "\n")
             else:
                 print("Warning: Received None result from processing an anomaly.")
-    o.flush() 
+    o.flush()
     o.close()
     print(f"Analysis complete. Results written to {output}.")
 
-if __name__ == "__main__":
 
+if __name__ == "__main__":
     uuid = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     # Argument parser for command line options
     parser = argparse.ArgumentParser(description="Analyze anomalies using various agents.")
     parser.add_argument('--dataset', type=str, default="phasetwo", help='Path to the data directory.')
     parser.add_argument('--max_workers', type=int, default=2, help='Number of worker threads for processing anomalies.')
-    parser.add_argument('--log_level', type=str, default='INFO', help='Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).')
+    parser.add_argument('--log_level', type=str, default='INFO',
+                        help='Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).')
     args = parser.parse_args()
     main(args, uuid)

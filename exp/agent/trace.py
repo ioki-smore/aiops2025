@@ -1,18 +1,13 @@
-from collections import defaultdict
-from pathlib import Path
-from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import glob
+from datetime import datetime
 import logging
 
-logger = logging.getLogger(__name__)
-
 from collections import defaultdict
-from exp.utils.input import load_parquet
-from exp.utils.time import utc_to_cst
+from exp.utils.input import load_parquet, load_parquet_by_hour
+from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def parse_tags_array(tags_array):
@@ -51,7 +46,7 @@ def detect_unbalanced_logs(spans: pd.DataFrame) -> List[Dict]:
     return unbalanced
 
 
-def detect_large_message(spans: pd.DataFrame, threshold=10*1024) -> List[Dict]:
+def detect_large_message(spans: pd.DataFrame, threshold=10 * 1024) -> List[Dict]:
     large_msgs = []
     for _, row in spans.iterrows():
         logs = row.get("logs")
@@ -167,46 +162,103 @@ def detect_service_self_calls(span_map: Dict[str, Dict[str, Dict]], children_map
     return self_calls
 
 
+# traceID	e0b937776abecfa2d946dcd4b3f2f2cf
+# spanID	c7a0a12ff9b0685e
+# operationName	hipstershop.ProductCatalogService/ListProducts
+# references	[{'refType': 'CHILD_OF', 'spanID': 'a97c04e2e6c86766', 'traceID': 'e0b937776abecfa2d946dcd4b3f2f2cf'}]
+# startTimeMillis	1749142862303
+# duration	65
+# TODO: use status.code, rpc.method
+# Does ip and peer need to be used?
+# tags
+# [{'key': 'rpc.system', 'type': 'string', 'value': 'grpc'}
+#  {'key': 'rpc.service', 'type': 'string', 'value': 'hipstershop.ProductCatalogService'}
+#  {'key': 'rpc.method', 'type': 'string', 'value': 'ListProducts'}
+#  {'key': 'net.peer.ip', 'type': 'string', 'value': '10.233.77.230'}
+#  {'key': 'net.peer.port', 'type': 'string', 'value': '33572'}
+#  {'key': 'instrumentation.name', 'type': 'string', 'value': 'go.opentelemetry.io/otel/sdk/tracer'}
+#  {'key': 'status.code', 'type': 'int64', 'value': '0'}
+#  {'key': 'status.message', 'type': 'string', 'value': ''}
+#  {'key': 'span.kind', 'type': 'string', 'value': 'server'}
+#  {'key': 'internal.span.format', 'type': 'string', 'value': 'jaeger'}]
+# TODO: how to use logs in span message
+# logs
+# [{'fields': array([{'key': 'message.type', 'type': 'string', 'value': 'RECEIVED'},
+# {'key': 'message.id', 'type': 'int64', 'value': '1'},
+# {'key': 'message.uncompressed_size', 'type': 'int64', 'value': '0'},
+# {'key': 'name', 'type': 'string', 'value': 'message'}],
+# dtype=object), 'timestamp': 1749142862303896}
+#  {'fields': array([{'key': 'message.type', 'type': 'string', 'value': 'SENT'},
+# {'key': 'message.id', 'type': 'int64', 'value': '1'},
+# {'key': 'message.uncompressed_size', 'type': 'int64', 'value': '2541'},
+# {'key': 'name', 'type': 'string', 'value': 'message'}],
+# dtype=object), 'timestamp': 1749142862303934}                           ]
+# TODO: use tags (name -> pod, node_name -> node, namespace -> namespace)
+# Does ip need to be used?
+# process
+# {
+# 'serviceName': 'productcatalogservice',
+# 'tags': array([
+#     {'key': 'exporter', 'type': 'string', 'value': 'jaeger'},
+#     {'key': 'float', 'type': 'float64', 'value': '312.23'},
+#     {'key': 'ip', 'type': 'string', 'value': '10.233.79.154'},
+#     {'key': 'name', 'type': 'string', 'value': 'productcatalogservice-1'},
+#     {'key': 'node_name', 'type': 'string', 'value': 'aiops-k8s-06'},
+#     {'key': 'namespace', 'type': 'string', 'value': 'hipstershop'}
+#     ],
+#     dtype=object)}
 class TraceAgent:
     def __init__(self, root_path: str):
-        self.root_path = Path(root_path)
-        self.fields = ["traceID", "spanID", "operationName", "references", "startTimeMillis", "duration", "tags", "logs", "process"]
-        self.spans_fields = ["traceID", "spanID", "operationName", "references", "start", "end", "duration", "tags", "logs", "process", "pod"]
+        self.root_path = root_path
+        self.fields = [
+            "traceID", "spanID", "operationName", "references", "startTimeMillis", "duration", "tags", "logs",
+            "process"]
+        self.analysis_fields = [
+            "traceID", "spanID", "operationName", "references", "start", "end", "duration", "tags", "logs", "process",
+            "pod"]
 
     def load_spans(self, start: datetime, end: datetime, max_workers=4):
-        start_cst = utc_to_cst(start) - timedelta(hours=1)
-        end_cst = utc_to_cst(end) + timedelta(hours=1)
+        def callback(spans: pd.DataFrame) -> pd.DataFrame:
+            def parse_process(process: Dict) -> pd.Series:
+                t = {}
+                tags = process.get('tags')
+                if isinstance(tags, np.ndarray):
+                    for tag in tags:
+                        if isinstance(tag, dict) and "key" in tag and "value" in tag:
+                            key = tag["key"]
+                            if key in ("node_name", "namespace", "name"):
+                                t[key] = tag["value"]
+                return pd.Series([
+                    t.get('node_name'),
+                    t.get('namespace'),
+                    t.get('name'),
+                ])
 
-        files = []
-        current = start_cst.replace(minute=0, second=0, microsecond=0)
-        end_hour = end_cst.replace(minute=0, second=0, microsecond=0)
+            spans['start'] = pd.to_datetime(spans["startTimeMillis"], unit="ms")
+            spans['end'] = spans['start'] + pd.to_timedelta(spans['duration'], unit='ms')
+            spans['pod'] = spans['process'].apply(
+                lambda x: x.get('serviceName', 'unknown') if isinstance(x, dict) else 'unknown'
+            )
+            spans[['node', 'namespace', 'pod']] = spans['process'].apply(parse_process)
+            logger.info(spans.head(10))
+            return spans
 
-        while current <= end_hour:
-            day = current.strftime("%Y-%m-%d")
-            hour = current.strftime("%H")
-            file_pattern = f"{self.root_path}/{day}/trace-parquet/trace_jaeger-span_{day}_{hour}-00-00.parquet"
-            files.extend(glob.glob(file_pattern))
-            current += timedelta(hours=1)
-
-        results = []
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(load_parquet, Path(f), self.fields): f for f in files}
-            for future in as_completed(futures):
-                df = future.result()
-                if not df.empty:
-                    df['start'] = pd.to_datetime(df["startTimeMillis"], unit="ms")
-                    df['end'] = df['start'] + pd.to_timedelta(df['duration'], unit='ms')
-                    df['pod'] = df['process'].apply(lambda x: x.get('serviceName', 'unknown') if isinstance(x, dict) else 'unknown')
-                    results.append(df[self.spans_fields])
-
-        return pd.concat(results, ignore_index=True) if results else pd.DataFrame()
+        return load_parquet_by_hour(
+            start, end, self.root_path,
+            file_pattern="{dataset}/{day}/trace-parquet/trace_jaeger-span_{day}_{hour}-00-00.parquet",
+            load_fields=self.fields,
+            return_fields=self.analysis_fields,
+            filter=None,
+            callback=callback,
+            max_workers=max_workers
+        )
 
     def score(self, start_time: datetime, end_time: datetime):
         spans = self.load_spans(start_time, end_time)
         if spans.empty:
             print(f"No spans found between {start_time} and {end_time}.")
             return []
-        spans.dropna(subset=self.spans_fields, inplace=True)
+        spans.dropna(subset=self.analysis_fields, inplace=True)
         grouped = spans.groupby('traceID')
 
         valid_trace_ids = []
@@ -223,7 +275,9 @@ class TraceAgent:
 
         scores = []
         operations = spans["operationName"].unique().tolist()
-        operation_threshold = {o: spans[spans["operationName"] == o]["duration"].mean() + 3 * spans[spans["operationName"] == o]["duration"].std() for o in operations}
+        operation_threshold = {
+            o: spans[spans["operationName"] == o]["duration"].mean() + 3 * spans[spans["operationName"] == o][
+                "duration"].std() for o in operations}
         # spans["rpc.service"] = spans["tags"].apply(lambda tags: parse_tags_array(tags)['rpc.service'])
         # spans["rpc.method"] = spans["tags"].apply(lambda tags: parse_tags_array(tags)['rpc.method'])
         # spans = spans.dropna(subset=["rpc.service", "rpc.method", "duration"])
@@ -241,7 +295,8 @@ class TraceAgent:
                 http_status_code = tags.get("http.status_code", "200")
                 operation = span["operationName"]
                 logs = span.get("logs", [])
-
+                process = span["process"]
+                # logger.info(type(process))
                 score = 0
                 reason = []
 
@@ -297,7 +352,7 @@ class TraceAgent:
                 })
 
         grouped = defaultdict(list)
-        
+
         for s in scores:
             if "service" in s and s["score"] >= 5:
                 threshold_info = next((r for r in s["reason"] if "duration" in r and "threshold" in r), "")
