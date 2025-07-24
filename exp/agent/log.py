@@ -24,6 +24,7 @@ def aggregate_errors(log: pd.DataFrame) -> list:
             'http.req.path': path,
             'http.req.method': method,
             'count': count,
+            'code': code,
             'timestamp': f"{first_ts} -> {last_ts}",
         })
 
@@ -83,10 +84,10 @@ class LogAgent:
                 #     }
 
                 try:
-                    log_msg = json.loads(message)
+                    log_msg = dict(json.loads(message))
                 except json.JSONDecodeError:
                     try:
-                        log_msg = ast.literal_eval(message)
+                        log_msg = dict(ast.literal_eval(message))
                     except Exception:
                         return pd.Series([None, None, None, None, None])
 
