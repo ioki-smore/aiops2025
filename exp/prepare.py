@@ -14,9 +14,11 @@ ROOT_DIR = Path("phasetwo")
 START_DATE = datetime.strptime("2025-06-17", "%Y-%m-%d")
 END_DATE = datetime.strptime("2025-06-29", "%Y-%m-%d")
 
+
 def daterange(start_date: datetime, end_date: datetime):
     for n in range((end_date - start_date).days + 1):
         yield start_date + timedelta(n)
+
 
 def preprocess_parquet(file_path: Path) -> None:
     try:
@@ -44,6 +46,7 @@ def preprocess_parquet(file_path: Path) -> None:
     except Exception as e:
         logging.error(f"Failed to write {file_path.name}: {e}")
 
+
 def process_directory_for_date(date: datetime, subdirs: list[str]) -> None:
     day_str = date.strftime("%Y-%m-%d")
     for subdir in subdirs:
@@ -60,6 +63,7 @@ def process_directory_for_date(date: datetime, subdirs: list[str]) -> None:
         for file_path in parquet_files:
             preprocess_parquet(file_path)
 
+
 def main():
     service_dirs = ["metric-parquet/apm/service"]
     infra_dirs = ["metric-parquet/infra/infra_pod"]
@@ -69,6 +73,7 @@ def main():
     for date in daterange(START_DATE, END_DATE):
         process_directory_for_date(date, service_dirs + infra_dirs + other_dirs + log_dirs)
         # process_directory_for_date(date, log_dirs)
+
 
 if __name__ == "__main__":
     main()

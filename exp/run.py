@@ -9,10 +9,14 @@ from typing import List, Dict, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pytz
 
+
 class MetricAgent:
     def __init__(self, root_path: Path):
         self.metric_path = root_path
-        self.infra_pod_metrics = ["pod_cpu_usage", "pod_memory_working_set_bytes", "pod_network_transmit_bytes", "pod_fs_reads_bytes", "pod_network_receive_bytes", "pod_network_transmit_packets", "pod_fs_writes_bytes", "pod_network_receive_packets", "pod_processes"]
+        self.infra_pod_metrics = [
+            "pod_cpu_usage", "pod_memory_working_set_bytes", "pod_network_transmit_bytes",
+            "pod_fs_reads_bytes", "pod_network_receive_bytes", "pod_network_transmit_packets",
+            "pod_fs_writes_bytes", "pod_network_receive_packets", "pod_processes"]
         self.infra_pod_metrics_thresholds = {
             "pod_cpu_usage": 0.8,
             # "pod_memory_working_set_bytes": 80,
@@ -56,13 +60,14 @@ class MetricAgent:
                     continue
 
                 monitor_fields = [
-                    "client_error", "server_error", "error_ratio", "client_error_ratio", "server_error_ratio", "timeout", "rrt", "rrt_max"
+                    "client_error", "server_error", "error_ratio", "client_error_ratio", "server_error_ratio",
+                    "timeout", "rrt", "rrt_max"
                 ]
 
                 for field in monitor_fields:
                     if field not in df.columns:
                         continue
-                    
+
                     mean = df[field].mean()
                     std = df[field].std()
                     threshold = mean + 3 * std
@@ -82,7 +87,7 @@ class MetricAgent:
             except Exception as e:
                 print(f"Error reading {file.name}: {e}")
                 continue
-        
+
         # infra metrics
         for metric_type in self.infra_pod_metrics:
             filename = f"infra_pod_{metric_type}_{cst_start.date()}.parquet"
@@ -189,7 +194,7 @@ class TraceAgent:
             debug(f"No traces found for component '{component}' between {start_time} and {end_time}")
             return []
         debug(f"Found {len(df)} traces for component '{component}' between {start_time} and {end_time}")
-        
+
         results = []
         duration_mean = df["duration"].mean()
         duration_std = df["duration"].std()
@@ -261,7 +266,7 @@ class TraceAgent:
         #         "process": row['process']
         #     })
         # for trace_id, spans in grouped_traces.items():
-            # print(f"Trace ID: {trace_id}, Spans: {spans}")
+        # print(f"Trace ID: {trace_id}, Spans: {spans}")
         # loop_spans = related[related["operationName"].str.contains(component)]
         # return loop_spans["operationName"].tolist()
         return []
@@ -281,7 +286,8 @@ class LogAgent:
             return []
         debug(f"Reading logs from: {path}")
         df = pd.read_parquet(path)
-        error_logs = df[df['message'].notna() & df['message'].str.startswith("{") & df['message'].str.contains("warning|error|exception", case=False, na=False)]
+        error_logs = df[df['message'].notna() & df['message'].str.startswith("{") & df['message'].str.contains(
+            "warning|error|exception", case=False, na=False)]
         timestamp_series = pd.to_datetime(error_logs['@timestamp'], utc=True)
         slots = error_logs[timestamp_series.between(utc_start, utc_end)]
         result = []
@@ -309,6 +315,7 @@ class LogAgent:
         debug(f"Found {len(result)} error logs between {start_time} and {end_time}")
         return result
 
+
 class JudgeAgent:
     def query_metrics(self, metrics) -> Tuple[str, str]:
         prompt = f"""
@@ -325,7 +332,7 @@ class JudgeAgent:
         except:
             print("LLM failed to parse response")
             return "", "LLM failed to parse"
-        
+
     def reason(self, trace_obs, log_obs) -> Tuple[str, str, str]:
         prompt = f"""
         Given the following observations from trace, and log:
@@ -348,6 +355,7 @@ class JudgeAgent:
             print(f"LLM Response: {response}")
             return "error", "LLM failed to parse", "LLM failed to parse"
 
+
 def call_llm(prompt: str) -> str:
     from openai import OpenAI
 
@@ -361,10 +369,11 @@ def call_llm(prompt: str) -> str:
         ],
         response_format={"type": "json_object"},  # 强制JSON输出
         stream=False,
-        temperature=0,       # 控制随机性 (0-2)
-        top_p=0.95,             # 多样性控制
+        temperature=0,  # 控制随机性 (0-2)
+        top_p=0.95,  # 多样性控制
     )
     return response.choices[0].message.content
+
 
 class Controller:
     def __init__(self, root_path: str):
@@ -395,6 +404,7 @@ class Controller:
     def batch_analyze(self, tasks: List[Dict]) -> List[Dict]:
         results = []
         all = len(tasks)
+
         def analyze_task(task):
             uuid = task["uuid"]
             desc = task["Anomaly Description"]
@@ -406,6 +416,7 @@ class Controller:
             else:
                 print(f"Failed to parse time range in description: {desc}")
                 return {"uuid": uuid, "error": "Failed to parse time range."}
+
         completed = 0
         with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_task = {executor.submit(analyze_task, task): task for task in tasks}
@@ -417,14 +428,15 @@ class Controller:
                     print(f"Progress: {completed}/{all} ({(completed / all) * 100:.2f}%)")
                 except Exception as e:
                     print(f"Error in analyzing task: {e}")
-                    results.append({"uuid": future_to_task[future]["uuid"], "component": "", "reason": "", "reasoning_trace": []})
+                    results.append(
+                        {"uuid": future_to_task[future]["uuid"], "component": "", "reason": "", "reasoning_trace": []})
         return results
 
 
 input = json.load(open("phasetwo/input.json", "r", encoding="utf-8"))
 if __name__ == "__main__":
     ctrl = Controller("phasetwo/")
-    
+
     print("Starting batch analysis...")
     print(f"Total tasks: {len(input)}")
 
@@ -434,4 +446,3 @@ if __name__ == "__main__":
         for item in result:
             json_line = json.dumps(item, ensure_ascii=False)
             f.write(json_line + "\n")
-        
