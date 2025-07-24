@@ -88,7 +88,7 @@ def main(args: argparse.Namespace, uuid: str):
     os.makedirs(os.path.dirname(output), exist_ok=True)
     o = open(output, 'w', encoding='utf-8')
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(process_anomaly, item, metric_agent, trace_agent, log_agent, judge_agent) for item in anomalies[:1]]
+        futures = [executor.submit(process_anomaly, item, metric_agent, trace_agent, log_agent, judge_agent) for item in anomalies]
         for future in futures:
             res = future.result()
             if res:
