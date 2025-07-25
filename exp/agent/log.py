@@ -11,16 +11,20 @@ logger = logging.getLogger(__name__)
 
 
 def aggregate_errors(log: pd.DataFrame) -> list:
-    grouped = log.groupby(['code', 'desc', 'http.req.path', 'http.req.method'])
+    grouped = log.groupby(['code',
+                           # 'desc',
+                           'http.req.path', 'http.req.method'])
 
     aggregates = []
-    for (code, desc, path, method), group in grouped:
+    for (code,
+         # desc,
+         path, method), group in grouped:
         count = len(group)
         first_ts = group['@timestamp'].min()
         last_ts = group['@timestamp'].max()
 
         aggregates.append({
-            'error_reason': desc,
+            # 'error_reason': desc,
             'http.req.path': path,
             'http.req.method': method,
             'count': count,
@@ -77,7 +81,7 @@ class LogAgent:
                 #     'http.req.id': 'cff2e4a5-473b-45fa-a2d7-2dbd7735c410', ''
                 #     'http.req.method': 'GET',
                 #     'http.req.path': '/product/0PUK6V6EV0',
-                #     'message': 'failed to retrieve ads',
+                #     'message': 'failed to retrieve ads', # only two type, seem like it is valueless
                 #     'session': '03bbc20f-700a-4cbb-8ba3-93e6698feec8',
                 #     'severity': 'warning',
                 #     'timestamp': '2025-06-17T08:14:31.470555511Z'
@@ -88,8 +92,13 @@ class LogAgent:
                 except json.JSONDecodeError:
                     try:
                         log_msg = dict(ast.literal_eval(message))
-                    except Exception:
+                    except (ValueError, SyntaxError) as e:
+                        logging.debug(f"Literal eval failed: {e}")
                         return pd.Series([None, None, None, None, None])
+                    except Exception as e:
+                        logging.warning(f"Unexpected parsing error: {e}")
+                        return pd.Series([None, None, None, None, None])
+
 
                 error = log_msg.get('error')
                 code, desc = None, None
@@ -123,7 +132,7 @@ class LogAgent:
             file_pattern="{dataset}/{day}/log-parquet/log_filebeat-server_{day}_{hour}-00-00.parquet",
             load_fields=self.fields,
             return_fields=self.analysis_fields,
-            filter=(ds.field("@timestamp") >= start) & (ds.field("@timestamp") <= end),  # type: ignore
+            filter_=(ds.field("@timestamp") >= start) & (ds.field("@timestamp") <= end),  # type: ignore
             callback=callback,
             max_workers=max_workers)
 
@@ -151,7 +160,7 @@ class LogAgent:
             scores.append({
                 'namespace': ns,
                 'node': node,
-                'service': pod,
+                'pod': pod,
                 'error_count': error,
                 'error_details': aggregates,
             })
@@ -162,3 +171,4 @@ class LogAgent:
 # {"failed to complete the order: rpc error: code = Internal desc = cart failure: failed to get user cart during checkout: rpc error: code = FailedPrecondition desc = Can't access cart storage. StackExchange.Redis.RedisTimeoutException: Timeout awaiting response (outbound=0KiB, inbound=0KiB, 5450ms elapsed, timeout is 5000ms), command=HGET, next: INFO, inst: 0, qu: 0, qs: 3, aw: False, bw: SpinningDown, rs: ReadAsync, ws: Idle, in: 0, in-pipe: 0, out-pipe: 0, last-in: 2, cur-in: 0, sync-ops: 2, async-ops: 27312, serverEndpoint: redis-cart:6379, conn-sec: 118978.57, aoc: 1, mc: 1/1/0, mgr: 10 of 10 available, clientName: cartservice-0(SE.Redis-v2.6.122.38350), IOCP: (Busy=0,Free=1000,Min=1,Max=1000), WORKER: (Busy=1,Free=32766,Min=1,Max=32767), POOL: (Threads=3,QueuedItems=0,CompletedItems=1109352,Timers=2), v: 2.6.122.38350 (Please take a look at this article for some common client-side issues that can cause timeouts: https://stackexchange.github.io/StackExchange.Redis/Timeouts)\n   at cartservice.cartstore.RedisCartStore.GetCartAsync(String userId) in /app/cartstore/RedisCartStore.cs:line 248",}
 # TODO: 1. error only occurs in requests
 # TODO: 2. add error message chain from current to downstream
+# TODO: 3. desc need to be handle (ignore number...)

@@ -92,7 +92,7 @@ def main(args: argparse.Namespace, uuid: str):
     o = open(output, 'w', encoding='utf-8')
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(process_anomaly, item, metric_agent, trace_agent, log_agent, judge_agent) for item in
-                   anomalies[1:2]]
+                   anomalies]
         for future in futures:
             res = future.result()
             if res:

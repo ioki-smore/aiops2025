@@ -1,11 +1,12 @@
+import logging
+from collections import defaultdict
+from datetime import datetime
+from typing import Dict, List, Optional
+
 import numpy as np
 import pandas as pd
-from datetime import datetime
-import logging
 
-from collections import defaultdict
-from exp.utils.input import load_parquet, load_parquet_by_hour
-from typing import Dict, List, Optional
+from exp.utils.input import load_parquet_by_hour
 
 logger = logging.getLogger(__name__)
 
@@ -183,16 +184,8 @@ def detect_service_self_calls(span_map: Dict[str, Dict[str, Dict]], children_map
 #  {'key': 'internal.span.format', 'type': 'string', 'value': 'jaeger'}]
 # TODO: how to use logs in span message
 # logs
-# [{'fields': array([{'key': 'message.type', 'type': 'string', 'value': 'RECEIVED'},
-# {'key': 'message.id', 'type': 'int64', 'value': '1'},
-# {'key': 'message.uncompressed_size', 'type': 'int64', 'value': '0'},
-# {'key': 'name', 'type': 'string', 'value': 'message'}],
-# dtype=object), 'timestamp': 1749142862303896}
-#  {'fields': array([{'key': 'message.type', 'type': 'string', 'value': 'SENT'},
-# {'key': 'message.id', 'type': 'int64', 'value': '1'},
-# {'key': 'message.uncompressed_size', 'type': 'int64', 'value': '2541'},
-# {'key': 'name', 'type': 'string', 'value': 'message'}],
-# dtype=object), 'timestamp': 1749142862303934}                           ]
+# [{'fields': array([{'key': 'message.type', 'type': 'string', 'value': 'RECEIVED'}, {'key': 'message.id', 'type': 'int64', 'value': '1'},{'key': 'message.uncompressed_size', 'type': 'int64', 'value': '0'}, {'key': 'name', 'type': 'string', 'value': 'message'}],dtype=object), 'timestamp': 1749142862303896}
+# {'fields': array([{'key': 'message.type', 'type': 'string', 'value': 'SENT'}, {'key': 'message.id', 'type': 'int64', 'value': '1'}, {'key': 'message.uncompressed_size', 'type': 'int64', 'value': '2541'}, {'key': 'name', 'type': 'string', 'value': 'message'}], dtype=object), 'timestamp': 1749142862303934}                           ]
 # TODO: use tags (name -> pod, node_name -> node, namespace -> namespace)
 # Does ip need to be used?
 # process
@@ -207,6 +200,7 @@ def detect_service_self_calls(span_map: Dict[str, Dict[str, Dict]], children_map
 #     {'key': 'namespace', 'type': 'string', 'value': 'hipstershop'}
 #     ],
 #     dtype=object)}
+
 class TraceAgent:
     def __init__(self, root_path: str):
         self.root_path = root_path
@@ -214,8 +208,8 @@ class TraceAgent:
             "traceID", "spanID", "operationName", "references", "startTimeMillis", "duration", "tags", "logs",
             "process"]
         self.analysis_fields = [
-            "traceID", "spanID", "operationName", "references", "start", "end", "duration", "tags", "logs", "process",
-            "pod"]
+            "traceID", "spanID", "operationName", "references", "start", "end", "duration", "tags", "logs", "node",
+            "namespace", "pod"]
 
     def load_spans(self, start: datetime, end: datetime, max_workers=4):
         def callback(spans: pd.DataFrame) -> pd.DataFrame:
@@ -240,7 +234,7 @@ class TraceAgent:
                 lambda x: x.get('serviceName', 'unknown') if isinstance(x, dict) else 'unknown'
             )
             spans[['node', 'namespace', 'pod']] = spans['process'].apply(parse_process)
-            logger.info(spans.head(10))
+            # logger.info(spans.head(10))
             return spans
 
         return load_parquet_by_hour(
@@ -248,7 +242,7 @@ class TraceAgent:
             file_pattern="{dataset}/{day}/trace-parquet/trace_jaeger-span_{day}_{hour}-00-00.parquet",
             load_fields=self.fields,
             return_fields=self.analysis_fields,
-            filter=None,
+            filter_=None,
             callback=callback,
             max_workers=max_workers
         )
@@ -385,3 +379,42 @@ class TraceAgent:
 
         compressed = sorted(compressed, key=lambda x: -x["top_operations"][0]["score"])[:5]
         return compressed
+# The span tag can be categrate as
+# [{'key': 'otel.library.name', 'type': 'string', 'value': 'OpenTelemetry.Instrumentation.StackExchangeRedis'}
+#  {'key': 'otel.library.version', 'type': 'string', 'value': '1.0.0.10'}
+#  {'key': 'db.system', 'type': 'string', 'value': 'redis'}
+#  {'key': 'db.redis.flags', 'type': 'string', 'value': 'DemandMaster'}
+#  {'key': 'db.statement', 'type': 'string', 'value': 'HMSET'}
+#  {'key': 'net.peer.name', 'type': 'string', 'value': 'redis-cart'}
+#  {'key': 'net.peer.port', 'type': 'int64', 'value': '6379'}
+#  {'key': 'db.redis.database_index', 'type': 'int64', 'value': '0'}
+#  {'key': 'peer.service', 'type': 'string', 'value': 'redis-cart:6379'}
+#  {'key': 'span.kind', 'type': 'string', 'value': 'client'}
+#  {'key': 'internal.span.format', 'type': 'string', 'value': 'otlp'}]
+
+# [{'key': 'otel.library.name', 'type': 'string', 'value': 'OpenTelemetry.Instrumentation.AspNetCore'}
+ # {'key': 'otel.library.version', 'type': 'string', 'value': '1.0.0.0'}
+ # {'key': 'server.address', 'type': 'string', 'value': 'cartservice'}
+ # {'key': 'server.port', 'type': 'int64', 'value': '7070'}
+ # {'key': 'http.request.method', 'type': 'string', 'value': 'POST'}
+ # {'key': 'url.scheme', 'type': 'string', 'value': 'http'}
+ # {'key': 'url.path', 'type': 'string', 'value': '/hipstershop.CartService/GetCart'}
+ # {'key': 'network.protocol.version', 'type': 'string', 'value': '2'}
+ # {'key': 'user_agent.original', 'type': 'string', 'value': 'grpc-go/1.31.0'}
+ # {'key': 'grpc.method', 'type': 'string', 'value': '/hipstershop.CartService/GetCart'}
+ # {'key': 'grpc.status_code', 'type': 'string', 'value': '0'}
+ # {'key': 'http.route', 'type': 'string', 'value': '/hipstershop.CartService/GetCart'}
+ # {'key': 'http.response.status_code', 'type': 'int64', 'value': '200'}
+ # {'key': 'span.kind', 'type': 'string', 'value': 'server'}
+ # {'key': 'internal.span.format', 'type': 'string', 'value': 'otlp'}]
+
+ # [{'key': 'rpc.system', 'type': 'string', 'value': 'grpc'}
+ # {'key': 'rpc.service', 'type': 'string', 'value': 'hipstershop.RecommendationService'}
+ # {'key': 'rpc.method', 'type': 'string', 'value': 'ListRecommendations'}
+ # {'key': 'net.peer.ip', 'type': 'string', 'value': 'recommendationservice'}
+ # {'key': 'net.peer.port', 'type': 'string', 'value': '8080'}
+ # {'key': 'instrumentation.name', 'type': 'string', 'value': 'go.opentelemetry.io/otel/sdk/tracer'}
+ # {'key': 'status.code', 'type': 'int64', 'value': '0'}
+ # {'key': 'status.message', 'type': 'string', 'value': ''}
+ # {'key': 'span.kind', 'type': 'string', 'value': 'client'}
+ # {'key': 'internal.span.format', 'type': 'string', 'value': 'jaeger'}]

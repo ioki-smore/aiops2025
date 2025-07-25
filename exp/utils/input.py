@@ -13,13 +13,13 @@ logger = logging.getLogger(__name__)
 
 
 def load_parquet(file: Path, columns: Optional[List[str]] = None,
-                 filter: Optional[ds.Expression] = None) -> pd.DataFrame:
+                 filter_: Optional[ds.Expression] = None) -> pd.DataFrame:
     try:
         dataset = ds.dataset(file, format="parquet")
         # print(f"Reading {file}")
         table = dataset.to_table(
             columns=columns if columns else [field.name for field in dataset.schema],
-            filter=filter,
+            filter=filter_, # type: ignore
         )
         return table.to_pandas()
     except Exception as e:
@@ -34,7 +34,7 @@ def load_parquet_by_hour(
         file_pattern: str,
         load_fields: Optional[List[str]] = None,
         return_fields: Optional[List[str]] = None,
-        filter: Optional[ds.Expression] = None,
+        filter_: Optional[ds.Expression] = None,
         callback: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
         max_workers: int = 4
 ) -> pd.DataFrame:
@@ -61,7 +61,7 @@ def load_parquet_by_hour(
 
     records = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(load_parquet, Path(f), load_fields, filter): f for f in files}
+        futures = {executor.submit(load_parquet, Path(f), load_fields, filter_): f for f in files}
         for future in as_completed(futures):
             file_path = futures[future]
             try:

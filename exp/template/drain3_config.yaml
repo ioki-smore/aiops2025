@@ -1,0 +1,30 @@
+parser:
+  # 设置树深度，建议保持默认8~10，防止过拟合
+  max_depth: 10
+
+  # 每个节点的最大子节点数，影响聚类数量
+  max_children: 100
+
+  # 用于模板归纳的参数阈值，越大越容易归为同一模板
+  similarity_threshold: 0.4
+
+  # 是否自动压缩模板，提升准确性
+  tree_depth_increment_on_duplicate: true
+
+  # 支持正则表达式识别参数位置（强烈推荐）
+  extra_delimiters: '=<>"\':,()[]{}'
+
+  # 用于识别变量（parameter）的正则表达式
+  param_strict_regex: 
+    - '\b\d{1,5}\b'                        # 数字
+    - '[0-9a-fA-F]{8,32}'                 # hex ID / UUID
+    - '([0-9]{1,3}\.){3}[0-9]{1,3}'       # IP 地址
+    - '"[^"]*"'                           # 引号括起来的字段
+    - "'[^']*'"                           # 单引号括起来的字段
+    - '[a-zA-Z0-9_\-/]+\.[a-zA-Z0-9_\-/]+' # 类似路径或域名
+    - '[A-Z0-9]{10}'                      # 产品 ID、Trace ID、订单号
+    - 'error: code = \w+'                # gRPC 错误代码
+    - 'desc = [^"]+'                     # 错误描述
+
+  # 是否开启缓存，推荐开启以提升性能
+  use_simhash: true
