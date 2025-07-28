@@ -90,21 +90,30 @@ def main(args: argparse.Namespace, uuid: str):
     all_tasks = len(anomalies)
     os.makedirs(os.path.dirname(output), exist_ok=True)
     o = open(output, 'w', encoding='utf-8')
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(process_anomaly, item, metric_agent, trace_agent, log_agent, judge_agent) for item in
-                   anomalies]
-        for future in futures:
-            res = future.result()
-            if res:
-                results.append(res)
-                completed += 1
-                print(f"Processed {completed}/{all_tasks} anomalies.", end='\r')
-                o.write(json.dumps(res, ensure_ascii=False) + "\n")
-            else:
-                print("Warning: Received None result from processing an anomaly.")
+    for anomaly in anomalies[1:2]:
+        res = process_anomaly(anomaly, metric_agent, trace_agent, log_agent, judge_agent)
+        if res:
+            # results.append(res)
+            completed += 1
+            logger.info(f"Processed {completed}/{all_tasks} anomalies.")
+            o.write(json.dumps(res, ensure_ascii=False) + "\n")
+        else:
+            logger.warning("Received None result from processing an anomaly.")
+    # with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    #     futures = [executor.submit(process_anomaly, item, metric_agent, trace_agent, log_agent, judge_agent) for item in
+    #                anomalies]
+    #     for future in futures:
+    #         res = future.result()
+    #         if res:
+    #             results.append(res)
+    #             completed += 1
+    #             logger.info(f"Processed {completed}/{all_tasks} anomalies.")
+    #             o.write(json.dumps(res, ensure_ascii=False) + "\n")
+    #         else:
+    #             logger.warning("Received None result from processing an anomaly.")
     o.flush()
     o.close()
-    print(f"Analysis complete. Results written to {output}.")
+    logger.info(f"Analysis complete. Results written to {output}.")
 
 
 if __name__ == "__main__":

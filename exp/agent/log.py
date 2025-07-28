@@ -1,35 +1,42 @@
 import logging
 import re
-from datetime import datetime
-
 import pandas as pd
 import pyarrow.dataset as ds
+
+from datetime import datetime
+from drain3 import TemplateMiner
+from drain3.file_persistence import FilePersistence
+from drain3.template_miner_config import TemplateMinerConfig
 
 from exp.utils.input import load_parquet_by_hour
 
 logger = logging.getLogger(__name__)
 
+error_pattern = re.compile(r'(?P<prefix>.*?)(?P<segment>rpc error: code = [^:]+? desc = (?:(?!rpc error:).)+)',
+                           re.IGNORECASE | re.DOTALL)
+code_desc_pattern = re.compile(r'code\s*=\s*(\w+)\s*desc\s*=\s*(.+)', re.IGNORECASE | re.DOTALL)
+
+config = TemplateMinerConfig()
+config.load("exp/template/drain3_log.ini")
+persistence = FilePersistence("drain3_state.bin")
+template_miner = TemplateMiner(persistence, config)
+
 
 def aggregate_errors(log: pd.DataFrame) -> list:
-    grouped = log.groupby(['code',
-                           # 'desc',
-                           'http.req.path', 'http.req.method'])
-
+    grouped = log.groupby(['code', 'desc', 'http.req.path', 'http.req.method'])
     aggregates = []
-    for (code,
-         # desc,
-         path, method), group in grouped:
+    for (code, desc, path, method), group in grouped:
         count = len(group)
-        first_ts = group['@timestamp'].min()
-        last_ts = group['@timestamp'].max()
+        start = group['@timestamp'].min().to_pydatetime().replace(microsecond=0)
+        end = group['@timestamp'].max().to_pydatetime().replace(microsecond=0)
 
         aggregates.append({
-            # 'error_reason': desc,
             'http.req.path': path,
             'http.req.method': method,
             'count': count,
             'code': code,
-            'timestamp': f"{first_ts} -> {last_ts}",
+            'desc': desc,
+            'timestamp': f"{start} -> {end}",
         })
 
     return aggregates
@@ -99,18 +106,39 @@ class LogAgent:
                         logging.warning(f"Unexpected parsing error: {e}")
                         return pd.Series([None, None, None, None, None])
 
-
                 error = log_msg.get('error')
-                code, desc = None, None
-                if isinstance(error, str):
-                    m = re.search(r'code\s*=\s*(\w+)\s*desc\s*=\s*(.+)', error)
-                    if m:
-                        code, desc = m.group(1), m.group(2)
+
+                if not error:
+                    return pd.Series([None, None, log_msg.get('message'),
+                                      clean_path(log_msg.get('http.req.path')),
+                                      log_msg.get('http.req.method')])
+                matches = list(error_pattern.finditer(error))
+                prefixes = []
+                segments = []
+                codes = []
+                desc_ = []
+                for i, m in enumerate(matches):
+                    prefix = m.group("prefix").rstrip(": ") if i == 0 else ""
+                    segment = m.group("segment").rstrip(":")
+                    if prefix:
+                        prefix = template_miner.add_log_message(prefix)
+                        prefixes.append(prefix["template_mined"])
+                    segment = template_miner.add_log_message(segment)
+                    match = re.search(code_desc_pattern, segment["template_mined"])
+                    if match:
+                        code, desc = match.group(1), match.group(2)
+                        codes.append(code)
+                        desc_.append(desc)
+                    segments.append(segment["template_mined"])
+                code = " -> ".join(codes[::-1]) if len(codes) > 1 else codes[0] if codes else ""
+                desc = " -> ".join(desc_[::-1]) if len(desc_) > 1 else desc_[0] if desc_ else ""
+                prefix = " -> ".join(prefixes[::-1]) if len(prefixes) > 1 else prefixes[0] if prefixes else ""
+                segment = " -> ".join(segments[::-1]) if len(segments) > 1 else segments[0] if segments else ""
 
                 return pd.Series([
                     code,
                     desc,
-                    log_msg.get('message'),
+                    f"{prefix}: {segment}",
                     clean_path(log_msg.get('http.req.path')),
                     log_msg.get('http.req.method'),
                 ])
@@ -124,7 +152,7 @@ class LogAgent:
 
             if 'message' in logs.columns:
                 logs = logs.drop(columns=['message'])
-            logs.rename(columns={'parsed_message': 'message'})
+            logs.rename(columns={'parsed_message': 'message'}, inplace=True)
             return logs
 
         return load_parquet_by_hour(
@@ -170,5 +198,5 @@ class LogAgent:
 
 # {"failed to complete the order: rpc error: code = Internal desc = cart failure: failed to get user cart during checkout: rpc error: code = FailedPrecondition desc = Can't access cart storage. StackExchange.Redis.RedisTimeoutException: Timeout awaiting response (outbound=0KiB, inbound=0KiB, 5450ms elapsed, timeout is 5000ms), command=HGET, next: INFO, inst: 0, qu: 0, qs: 3, aw: False, bw: SpinningDown, rs: ReadAsync, ws: Idle, in: 0, in-pipe: 0, out-pipe: 0, last-in: 2, cur-in: 0, sync-ops: 2, async-ops: 27312, serverEndpoint: redis-cart:6379, conn-sec: 118978.57, aoc: 1, mc: 1/1/0, mgr: 10 of 10 available, clientName: cartservice-0(SE.Redis-v2.6.122.38350), IOCP: (Busy=0,Free=1000,Min=1,Max=1000), WORKER: (Busy=1,Free=32766,Min=1,Max=32767), POOL: (Threads=3,QueuedItems=0,CompletedItems=1109352,Timers=2), v: 2.6.122.38350 (Please take a look at this article for some common client-side issues that can cause timeouts: https://stackexchange.github.io/StackExchange.Redis/Timeouts)\n   at cartservice.cartstore.RedisCartStore.GetCartAsync(String userId) in /app/cartstore/RedisCartStore.cs:line 248",}
 # TODO: 1. error only occurs in requests
-# TODO: 2. add error message chain from current to downstream
-# TODO: 3. desc need to be handle (ignore number...)
+# TODO: 2. add error message chain from current to downstream ✅
+# TODO: 3. desc need to be handle (ignore number...) ✅

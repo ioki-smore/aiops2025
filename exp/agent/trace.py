@@ -11,24 +11,6 @@ from exp.utils.input import load_parquet_by_hour
 logger = logging.getLogger(__name__)
 
 
-def parse_tags_array(tags_array):
-    tag_dict = {}
-    if isinstance(tags_array, np.ndarray):
-        for tag in tags_array:
-            if isinstance(tag, dict) and "key" in tag and "value" in tag:
-                tag_dict[tag["key"]] = tag["value"]
-    return tag_dict
-
-
-def detect_error_spans(spans: pd.DataFrame):
-    error_spans = []
-    for _, row in spans.iterrows():
-        tag_dict = parse_tags_array(row.get("tags"))
-        if tag_dict.get("status.code", "0") != "0" or str(tag_dict.get("http.status_code", "0")).startswith("5"):
-            error_spans.append(row.to_dict())
-    return error_spans
-
-
 def detect_unbalanced_logs(spans: pd.DataFrame) -> List[Dict]:
     unbalanced = []
     for _, row in spans.iterrows():
@@ -47,53 +29,53 @@ def detect_unbalanced_logs(spans: pd.DataFrame) -> List[Dict]:
     return unbalanced
 
 
-def detect_large_message(spans: pd.DataFrame, threshold=10 * 1024) -> List[Dict]:
-    large_msgs = []
-    for _, row in spans.iterrows():
-        logs = row.get("logs")
-        if logs.size == 0 or not isinstance(logs, np.ndarray):
-            continue
-        for log in logs:
-            fields = log.get("fields")
-            if isinstance(fields, np.ndarray):
-                for f in fields:
-                    if f.get("key") == "message.uncompressed_size":
-                        size = int(f.get("value", "0"))
-                        if size > threshold:
-                            large_msgs.append(row.to_dict())
-    return large_msgs
+def get_operation_name(operation_name: str) -> str:
+    return operation_name.removeprefix("hipstershop.").removeprefix("/hipstershop.")
 
 
+# {trace_id: {spans: {span_id: span}, children: {parent_id: children_id}, roots: [span_id]}}
 def build_trace(spans: pd.DataFrame) -> Dict[str, Dict]:
     traces = defaultdict(lambda: {'spans': {}, 'children': defaultdict(list), 'roots': []})
     for _, row in spans.iterrows():
-        trace_id = row['traceID']
-        span_id = row['spanID']
+        trace_id = str(row['traceID'])
+        span_id: str = str(row['spanID'])
         span = row.to_dict()
         traces[trace_id]['spans'][span_id] = span
-        refs = span.get('references', "[]")
-        if isinstance(refs, list):
-            parents = [r['spanID'] for r in refs if r.get('refType') == 'CHILD_OF']
-            if parents:
-                for p in parents:
-                    traces[trace_id]['children'][p].append(span_id)
-            else:
-                traces[trace_id]['roots'].append(span_id)
+        refs = list(span.get('references', []))
+        parents = [r['spanID'] for r in refs if r.get('refType') == 'CHILD_OF']
+        if parents:
+            for p in parents:
+                traces[trace_id]['children'][p].append(span_id)
         else:
             traces[trace_id]['roots'].append(span_id)
     return traces
 
 
+# single trace
 def detect_trace_structure_signature(trace: Dict) -> str:
-    def dfs(node, children):
-        if node not in children:
-            return node
-        return f"{node}({','.join(sorted([dfs(c, children) for c in children[node]]))})"
+    def dfs(node, children_):
+        # operation_name = get_operation_name(spans[node]['operationName'])
+        # if node not in children_:
+        #     return f"{operation_name}[{spans[node]['kind']}]"
+        # return f"{operation_name}[{spans[node]['kind']}]({','.join(sorted([dfs(c, children_) for c in children_[node]]))})"
+        op_name = get_operation_name(spans[node]['operationName'])
+        kind = spans[node]['kind']
+        entry = {
+            "operation": op_name,
+            "kind": kind
+        }
+        if node in children_:
+            entry["children"] = [dfs(c, children_) for c in sorted(children_[node])]
+        return entry
 
     roots = trace['roots'] or list(trace['spans'].keys())
+    spans = trace['spans']
     children = trace['children']
     signatures = [dfs(r, children) for r in roots]
-    return '|'.join(sorted(signatures))
+    logger.info(signatures)
+    logger.info('|'.join(sorted(signatures)))
+    # return '|'.join(sorted(signatures))
+    return ""
 
 
 def group_by_structure(traces: Dict[str, Dict]) -> Dict[str, List[str]]:
@@ -159,7 +141,7 @@ def detect_service_self_calls(span_map: Dict[str, Dict[str, Dict]], children_map
         for child_id in children:
             child_service = get_service_name(span_map, child_id)
             if parent_service and child_service and parent_service == child_service:
-                self_calls.append((parent_id, child_id))
+                self_calls.append(parent_service)
     return self_calls
 
 
@@ -208,8 +190,8 @@ class TraceAgent:
             "traceID", "spanID", "operationName", "references", "startTimeMillis", "duration", "tags", "logs",
             "process"]
         self.analysis_fields = [
-            "traceID", "spanID", "operationName", "references", "start", "end", "duration", "tags", "logs", "node",
-            "namespace", "pod"]
+            "traceID", "spanID", "operationName", "references", "start", "end", "duration", "tags", "logs", "namespace",
+            "node", "pod", 'kind', 'code']
 
     def load_spans(self, start: datetime, end: datetime, max_workers=4):
         def callback(spans: pd.DataFrame) -> pd.DataFrame:
@@ -228,13 +210,23 @@ class TraceAgent:
                     t.get('name'),
                 ])
 
+            def parse_tags(tags: np.ndarray) -> pd.Series:
+                t = {}
+                for tag in tags:
+                    if isinstance(tag, dict) and "key" in tag and "value" in tag:
+                        key = tag["key"]
+                        if key in ("span.kind", "status.code", "grpc.status_code"):
+                            t[key] = tag["value"]
+
+                return pd.Series([
+                    str(t.get('span.kind')).lower(),
+                    t.get("status.code") or t.get("grpc.status_code") or '0'
+                ])
+
             spans['start'] = pd.to_datetime(spans["startTimeMillis"], unit="ms")
             spans['end'] = spans['start'] + pd.to_timedelta(spans['duration'], unit='ms')
-            spans['pod'] = spans['process'].apply(
-                lambda x: x.get('serviceName', 'unknown') if isinstance(x, dict) else 'unknown'
-            )
             spans[['node', 'namespace', 'pod']] = spans['process'].apply(parse_process)
-            # logger.info(spans.head(10))
+            spans[['kind', 'code']] = spans['tags'].apply(parse_tags)
             return spans
 
         return load_parquet_by_hour(
@@ -250,7 +242,7 @@ class TraceAgent:
     def score(self, start_time: datetime, end_time: datetime):
         spans = self.load_spans(start_time, end_time)
         if spans.empty:
-            print(f"No spans found between {start_time} and {end_time}.")
+            logger.warning(f"No spans found between {start_time} and {end_time}.")
             return []
         spans.dropna(subset=self.analysis_fields, inplace=True)
         grouped = spans.groupby('traceID')
@@ -264,75 +256,59 @@ class TraceAgent:
 
         spans = spans[spans['traceID'].isin(valid_trace_ids)]
         print(f"Analyzing {len(valid_trace_ids)} valid traces from {start_time} to {end_time}")
-        # traces = build_trace(spans)
-        # structure_groups = group_by_structure(traces)
+        traces = build_trace(spans)
+        structure_groups = group_by_structure(traces)
 
         scores = []
-        operations = spans["operationName"].unique().tolist()
-        operation_threshold = {
-            o: spans[spans["operationName"] == o]["duration"].mean() + 3 * spans[spans["operationName"] == o][
-                "duration"].std() for o in operations}
-        # spans["rpc.service"] = spans["tags"].apply(lambda tags: parse_tags_array(tags)['rpc.service'])
-        # spans["rpc.method"] = spans["tags"].apply(lambda tags: parse_tags_array(tags)['rpc.method'])
-        # spans = spans.dropna(subset=["rpc.service", "rpc.method", "duration"])
+        operation_names = spans.groupby("operationName")["duration"]
+        operation_threshold = (operation_names.mean() + 3 * operation_names.std()).to_dict()
+
         traces = spans.groupby('traceID')
         candidate_service = []
         for trace_id, spans in traces:
-
             for _, span in spans.iterrows():
-                tags = parse_tags_array(span.get("tags", []))
-                if tags.get("span.kind", "") != "client":
-                    continue
+                code = span['code']
                 service = span["pod"]
                 duration = span["duration"]
-                status_code = tags.get("status.code", "0")
-                http_status_code = tags.get("http.status_code", "200")
                 operation = span["operationName"]
-                logs = span.get("logs", [])
-                process = span["process"]
-                # logger.info(type(process))
                 score = 0
                 reason = []
 
                 # Check for anomalies
-                if status_code != "0" and http_status_code != "200":
+                if code != "0":
                     score += 10
                     reason.append("status_code != 0")
 
                 if duration > operation_threshold.get(operation, 0):
-                    score += 7
+                    score += 5
                     reason.append(f"duration {duration} exceeds threshold {operation_threshold.get(operation)}")
 
-                for log in logs:
-                    fields = log.get("fields", [])
-                    for field in fields:
-                        if "error" in str(field.get("value", "")).lower():
-                            score += 10
-                            reason.append("log contains error")
-                            break
-                        # if field.get("key") == "message.uncompressed_size":
-                        #     size = int(field.get("value", "0"))
-                        #     if size > 1024:
-                        #         score += 3
-                        #         reason.append(f"large message size {size} bytes")
+                # for log in logs:
+                #     fields = log.get("fields", [])
+                #     # for field in fields:
+                #     #     if "error" in str(field.get("value", "")).lower():
+                #     #         score += 10
+                #     #         reason.append("log contains error")
+                #     #         break
+                #         # if field.get("key") == "message.uncompressed_size":
+                #         #     size = int(field.get("value", "0"))
+                #         #     if size > 1024:
+                #         #         score += 3
+                #         #         reason.append(f"large message size {size} bytes")
 
                 if score > 0 and (service, operation) not in candidate_service:
                     scores.append({
-                        # "traceID": span["traceID"],
-                        # "spanID": span["spanID"],
                         "service": service,
                         "operation": operation,
                         "score": score,
-                        "reason": reason,
-                        # "startTimeMillis": span["start"],
-                        # "duration": duration
+                        "reason": reason
                     })
                     candidate_service.append((service, operation))
             trace = build_trace(spans)
             loops = detect_self_loops(trace['spans'], trace['children'])
             if loops:
                 scores.append({
-                    "traceID": trace_id,
+                    "score": 15,
                     "issue": "self_loops",
                     "details": loops
                 })
@@ -340,9 +316,9 @@ class TraceAgent:
             self_calls = detect_service_self_calls(trace['spans'], trace['children'])
             if self_calls:
                 scores.append({
-                    "traceID": trace_id,
-                    "issue": "service_self_calls",
-                    "details": self_calls
+                    "score": 15,
+                    "service": self_calls,
+                    "operation": "service_self_calls",
                 })
 
         grouped = defaultdict(list)
@@ -379,7 +355,7 @@ class TraceAgent:
 
         compressed = sorted(compressed, key=lambda x: -x["top_operations"][0]["score"])[:5]
         return compressed
-# The span tag can be categrate as
+# The span tag can be classified as
 # [{'key': 'otel.library.name', 'type': 'string', 'value': 'OpenTelemetry.Instrumentation.StackExchangeRedis'}
 #  {'key': 'otel.library.version', 'type': 'string', 'value': '1.0.0.10'}
 #  {'key': 'db.system', 'type': 'string', 'value': 'redis'}
@@ -393,28 +369,28 @@ class TraceAgent:
 #  {'key': 'internal.span.format', 'type': 'string', 'value': 'otlp'}]
 
 # [{'key': 'otel.library.name', 'type': 'string', 'value': 'OpenTelemetry.Instrumentation.AspNetCore'}
- # {'key': 'otel.library.version', 'type': 'string', 'value': '1.0.0.0'}
- # {'key': 'server.address', 'type': 'string', 'value': 'cartservice'}
- # {'key': 'server.port', 'type': 'int64', 'value': '7070'}
- # {'key': 'http.request.method', 'type': 'string', 'value': 'POST'}
- # {'key': 'url.scheme', 'type': 'string', 'value': 'http'}
- # {'key': 'url.path', 'type': 'string', 'value': '/hipstershop.CartService/GetCart'}
- # {'key': 'network.protocol.version', 'type': 'string', 'value': '2'}
- # {'key': 'user_agent.original', 'type': 'string', 'value': 'grpc-go/1.31.0'}
- # {'key': 'grpc.method', 'type': 'string', 'value': '/hipstershop.CartService/GetCart'}
- # {'key': 'grpc.status_code', 'type': 'string', 'value': '0'}
- # {'key': 'http.route', 'type': 'string', 'value': '/hipstershop.CartService/GetCart'}
- # {'key': 'http.response.status_code', 'type': 'int64', 'value': '200'}
- # {'key': 'span.kind', 'type': 'string', 'value': 'server'}
- # {'key': 'internal.span.format', 'type': 'string', 'value': 'otlp'}]
+# {'key': 'otel.library.version', 'type': 'string', 'value': '1.0.0.0'}
+# {'key': 'server.address', 'type': 'string', 'value': 'cartservice'}
+# {'key': 'server.port', 'type': 'int64', 'value': '7070'}
+# {'key': 'http.request.method', 'type': 'string', 'value': 'POST'}
+# {'key': 'url.scheme', 'type': 'string', 'value': 'http'}
+# {'key': 'url.path', 'type': 'string', 'value': '/hipstershop.CartService/GetCart'}
+# {'key': 'network.protocol.version', 'type': 'string', 'value': '2'}
+# {'key': 'user_agent.original', 'type': 'string', 'value': 'grpc-go/1.31.0'}
+# {'key': 'grpc.method', 'type': 'string', 'value': '/hipstershop.CartService/GetCart'}
+# {'key': 'grpc.status_code', 'type': 'string', 'value': '0'}
+# {'key': 'http.route', 'type': 'string', 'value': '/hipstershop.CartService/GetCart'}
+# {'key': 'http.response.status_code', 'type': 'int64', 'value': '200'}
+# {'key': 'span.kind', 'type': 'string', 'value': 'server'}
+# {'key': 'internal.span.format', 'type': 'string', 'value': 'otlp'}]
 
- # [{'key': 'rpc.system', 'type': 'string', 'value': 'grpc'}
- # {'key': 'rpc.service', 'type': 'string', 'value': 'hipstershop.RecommendationService'}
- # {'key': 'rpc.method', 'type': 'string', 'value': 'ListRecommendations'}
- # {'key': 'net.peer.ip', 'type': 'string', 'value': 'recommendationservice'}
- # {'key': 'net.peer.port', 'type': 'string', 'value': '8080'}
- # {'key': 'instrumentation.name', 'type': 'string', 'value': 'go.opentelemetry.io/otel/sdk/tracer'}
- # {'key': 'status.code', 'type': 'int64', 'value': '0'}
- # {'key': 'status.message', 'type': 'string', 'value': ''}
- # {'key': 'span.kind', 'type': 'string', 'value': 'client'}
- # {'key': 'internal.span.format', 'type': 'string', 'value': 'jaeger'}]
+# [{'key': 'rpc.system', 'type': 'string', 'value': 'grpc'}
+# {'key': 'rpc.service', 'type': 'string', 'value': 'hipstershop.RecommendationService'}
+# {'key': 'rpc.method', 'type': 'string', 'value': 'ListRecommendations'}
+# {'key': 'net.peer.ip', 'type': 'string', 'value': 'recommendationservice'}
+# {'key': 'net.peer.port', 'type': 'string', 'value': '8080'}
+# {'key': 'instrumentation.name', 'type': 'string', 'value': 'go.opentelemetry.io/otel/sdk/tracer'}
+# {'key': 'status.code', 'type': 'int64', 'value': '0'}
+# {'key': 'status.message', 'type': 'string', 'value': ''}
+# {'key': 'span.kind', 'type': 'string', 'value': 'client'}
+# {'key': 'internal.span.format', 'type': 'string', 'value': 'jaeger'}]
